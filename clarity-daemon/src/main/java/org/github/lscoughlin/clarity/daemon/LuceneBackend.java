@@ -5,6 +5,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -25,14 +26,23 @@ import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
+import org.apache.lucene.search.BooleanClause;
+import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
+import org.apache.lucene.search.PrefixQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.TotalHits;
+import org.apache.lucene.search.uhighlight.DefaultPassageFormatter;
+import org.apache.lucene.search.uhighlight.UnifiedHighlighter;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.github.lscoughlin.clarity.parser.Chunk;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Lucene implementation of {@link SearchBackend}: one instance owns one
@@ -47,6 +57,8 @@ import org.github.lscoughlin.clarity.parser.Chunk;
  * records the embedding model id and dimensions for drift detection.
  */
 final class LuceneBackend implements SearchBackend {
+    private static final Logger LOG = LoggerFactory.getLogger(LuceneBackend.class);
+
     private static final String META_MODEL = "embedding_model";
     private static final String META_DIMS = "embedding_dims";
     private static final String META_SCHEMA = "schema_version";
@@ -58,6 +70,27 @@ final class LuceneBackend implements SearchBackend {
 
     /** Heading matches rank above equal body matches in TEXT mode. */
     private static final float HEADING_BOOST = 2.0f;
+
+    /** Bounded highlight window per hit, in chars — "a couple hundred" per the sketch this implements. */
+    private static final int SNIPPET_WINDOW_CHARS = 300;
+
+    /**
+     * Chunks at or below this length return in full even without
+     * {@code full_text: true} — snippeting only pays off once the saved
+     * context is a multiple of the window. Tuned against a reference corpus:
+     * most chunks are well under this, so most hits never invoke the
+     * highlighter at all.
+     */
+    private static final int SNIPPET_THRESHOLD_CHARS = SNIPPET_WINDOW_CHARS * 3;
+
+    /** Standard reciprocal-rank-fusion constant (Cormack et al.); not user-configurable. */
+    private static final int RRF_K = 60;
+
+    /** Per-leg candidate depth before fusion: generous over-fetch relative to topN. */
+    private static final int RRF_CANDIDATE_MULTIPLIER = 4;
+
+    /** Floor on candidate depth so small topN values still give RRF room to work with. */
+    private static final int RRF_MIN_CANDIDATES = 40;
 
     /** Max embedding rows per inference run; bounds session memory on huge files. */
     static final int EMBED_BATCH_ROWS = 64;
@@ -228,9 +261,31 @@ final class LuceneBackend implements SearchBackend {
 
     @Override
     public List<Hit> search(String query, int topN, SearchBackend.Syntax syntax) throws IOException {
+        return search(query, topN, syntax, null);
+    }
+
+    @Override
+    public List<Hit> search(String query, int topN, SearchBackend.Syntax syntax, String pathPrefix)
+            throws IOException {
+        return search(query, topN, syntax, pathPrefix, false);
+    }
+
+    @Override
+    public List<Hit> search(
+            String query, int topN, SearchBackend.Syntax syntax, String pathPrefix, boolean fullText)
+            throws IOException {
+        Query filter = PathPrefix.toQuery(pathPrefix);
         if (syntax == SearchBackend.Syntax.VECTOR) {
-            return searchVector(query, topN);
+            return searchVector(query, topN, filter);
         }
+        if (syntax == SearchBackend.Syntax.HYBRID) {
+            return searchHybrid(query, topN, filter, fullText);
+        }
+        return runQuery(buildTextQuery(query, syntax, filter), topN, fullText);
+    }
+
+    /** Escaped/boosted BM25 query for TEXT, raw Lucene syntax for RAW, filtered by {@code filter}. */
+    private Query buildTextQuery(String query, SearchBackend.Syntax syntax, Query filter) {
         var effective = syntax == SearchBackend.Syntax.RAW ? query : QueryParser.escape(query);
         Query parsed;
         try {
@@ -245,40 +300,168 @@ final class LuceneBackend implements SearchBackend {
         } catch (ParseException e) {
             throw new IllegalArgumentException("invalid query: " + query, e);
         }
-        return runQuery(parsed, topN);
+        return filter == null
+                ? parsed
+                : new BooleanQuery.Builder()
+                        .add(parsed, BooleanClause.Occur.MUST)
+                        .add(filter, BooleanClause.Occur.FILTER)
+                        .build();
+    }
+
+    /**
+     * Fuses BM25 text ranking and cosine vector ranking via reciprocal rank
+     * fusion (RRF) over Lucene's internal doc ids, computed within one
+     * shared reader snapshot so both legs' ids are comparable. Silently
+     * degrades to text-only ranking when no embedder is configured, or the
+     * vector leg fails for any reason.
+     */
+    private List<Hit> searchHybrid(String query, int topN, Query filter, boolean fullText)
+            throws IOException {
+        Query textQuery = buildTextQuery(query, SearchBackend.Syntax.TEXT, filter);
+        int candidates = Math.max(topN * RRF_CANDIDATE_MULTIPLIER, RRF_MIN_CANDIDATES);
+        try (DirectoryReader reader = DirectoryReader.open(writer)) {
+            var searcher = new IndexSearcher(reader);
+            var textTop = searcher.search(textQuery, candidates);
+            var vectorDocs = new ScoreDoc[0];
+            if (embedder != null) {
+                try {
+                    vectorDocs =
+                            searcher.search(
+                                            new KnnFloatVectorQuery(
+                                                    "embedding", embedder.embed(query), candidates, filter),
+                                            candidates)
+                                    .scoreDocs;
+                } catch (IOException | RuntimeException e) {
+                    LOG.atDebug()
+                            .setMessage("hybrid search: vector leg unavailable for '{}', degrading to text-only")
+                            .addArgument(indexName)
+                            .setCause(e)
+                            .log();
+                }
+            }
+            var fused = fuseRanks(textTop.scoreDocs, vectorDocs, topN);
+            return toHits(searcher, fused, textQuery, fullText);
+        }
+    }
+
+    private static TopDocs fuseRanks(ScoreDoc[] textDocs, ScoreDoc[] vectorDocs, int topN) {
+        var scores = new LinkedHashMap<Integer, Double>();
+        addRrfScores(scores, textDocs);
+        addRrfScores(scores, vectorDocs);
+        var ranked =
+                scores.entrySet().stream()
+                        .sorted(Map.Entry.<Integer, Double>comparingByValue().reversed())
+                        .limit(topN)
+                        .toList();
+        var scoreDocs = new ScoreDoc[ranked.size()];
+        for (int i = 0; i < ranked.size(); i++) {
+            scoreDocs[i] = new ScoreDoc(ranked.get(i).getKey(), ranked.get(i).getValue().floatValue());
+        }
+        return new TopDocs(new TotalHits(scoreDocs.length, TotalHits.Relation.EQUAL_TO), scoreDocs);
+    }
+
+    private static void addRrfScores(Map<Integer, Double> scores, ScoreDoc[] docs) {
+        for (int rank = 0; rank < docs.length; rank++) {
+            scores.merge(docs[rank].doc, 1.0 / (RRF_K + rank + 1), Double::sum);
+        }
     }
 
     /**
      * kNN lookup over the {@code embedding} field. Scores derive from
      * cosine similarity — not comparable to BM25 text scores. Indexes
-     * written without an embedder simply return no hits.
+     * written without an embedder simply return no hits. {@code filter},
+     * when non-null, pre-filters the candidate set before the k-nearest
+     * computation runs — not a post-filter over an unfiltered top-k.
      */
-    private List<Hit> searchVector(String query, int topN) throws IOException {
+    private List<Hit> searchVector(String query, int topN, Query filter) throws IOException {
         if (embedder == null) {
             throw new IOException("vector search unavailable: index '" + indexName + "' has no embedder");
         }
+        // Vector hits have no term match to highlight around: always full text.
         return runQuery(
-                new KnnFloatVectorQuery("embedding", embedder.embed(query), topN), topN);
+                new KnnFloatVectorQuery("embedding", embedder.embed(query), topN, filter), topN, true);
     }
 
-    private List<Hit> runQuery(Query parsed, int topN) throws IOException {
-        var hits = new ArrayList<Hit>();
+    private List<Hit> runQuery(Query parsed, int topN, boolean fullText) throws IOException {
         try (DirectoryReader reader = DirectoryReader.open(writer)) {
             var searcher = new IndexSearcher(reader);
             var top = searcher.search(parsed, topN);
-            for (ScoreDoc scoreDoc : top.scoreDocs) {
-                var doc = searcher.storedFields().document(scoreDoc.doc);
-                hits.add(
-                        new Hit(
-                                indexName,
-                                doc.get("path"),
-                                splitHeading(doc.get("heading")),
-                                doc.get("text"),
-                                scoreDoc.score,
-                                storedLine(doc)));
-            }
+            return toHits(searcher, top, parsed, fullText);
+        }
+    }
+
+    /**
+     * Converts already-executed {@code top} into {@link Hit}s against the
+     * given {@code searcher}, snippeting around {@code highlightQuery}'s
+     * matches unless {@code fullText}. {@code highlightQuery} need not be
+     * the exact query that produced {@code top} (a fused hybrid result set
+     * highlights around its BM25 leg only) — docs with no term match under
+     * it simply get no snippet and fall back to the full chunk.
+     */
+    private List<Hit> toHits(IndexSearcher searcher, TopDocs top, Query highlightQuery, boolean fullText)
+            throws IOException {
+        var hits = new ArrayList<Hit>();
+        var docs = new Document[top.scoreDocs.length];
+        var texts = new String[top.scoreDocs.length];
+        for (int i = 0; i < top.scoreDocs.length; i++) {
+            docs[i] = searcher.storedFields().document(top.scoreDocs[i].doc);
+            texts[i] = docs[i].get("text");
+        }
+        String[] snippets = null;
+        if (!fullText && needsSnippet(texts)) {
+            var highlighter =
+                    UnifiedHighlighter.builder(searcher, analyzer)
+                            .withFormatter(new DefaultPassageFormatter("**", "**", " ... ", false))
+                            .build();
+            snippets = highlighter.highlight("text", highlightQuery, top, 1);
+        }
+        for (int i = 0; i < top.scoreDocs.length; i++) {
+            var fullChunkText = texts[i];
+            var useSnippet =
+                    snippets != null
+                            && fullChunkText != null
+                            && fullChunkText.length() > SNIPPET_THRESHOLD_CHARS
+                            && snippets[i] != null
+                            && !snippets[i].isBlank();
+            hits.add(
+                    new Hit(
+                            indexName,
+                            docs[i].get("path"),
+                            splitHeading(docs[i].get("heading")),
+                            useSnippet ? capToWindow(snippets[i]) : fullChunkText,
+                            top.scoreDocs[i].score,
+                            storedLine(docs[i]),
+                            useSnippet));
         }
         return hits;
+    }
+
+    private static boolean needsSnippet(String[] texts) {
+        for (var text : texts) {
+            if (text != null && text.length() > SNIPPET_THRESHOLD_CHARS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Hard char cap independent of the highlighter's own passage sizing —
+     * the bounded-output guarantee lives here. Centers on the first
+     * highlight marker so the matched term stays in the window.
+     */
+    private static String capToWindow(String snippet) {
+        if (snippet.length() <= SNIPPET_WINDOW_CHARS) {
+            return snippet;
+        }
+        var mark = snippet.indexOf("**");
+        var center = mark >= 0 ? mark : snippet.length() / 2;
+        var half = SNIPPET_WINDOW_CHARS / 2;
+        var start = Math.max(0, center - half);
+        var end = Math.min(snippet.length(), start + SNIPPET_WINDOW_CHARS);
+        var prefix = start > 0 ? "... " : "";
+        var suffix = end < snippet.length() ? " ..." : "";
+        return prefix + snippet.substring(start, end) + suffix;
     }
 
     @Override

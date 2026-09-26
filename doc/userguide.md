@@ -55,11 +55,18 @@ java -jar clarity-cli/target/clarity-cli-*.jar index --dir /path/to/project
 java -jar clarity-cli/target/clarity-cli-*.jar query --dir /path/to/project my_docs "reindex the corpus"
 ```
 
-Queries are plain words by default. `--query-syntax raw`
-enables Lucene syntax (phrases, fields, booleans);
-`--query-syntax vector` runs semantic search. `-n` limits
+Queries run as `hybrid` by default: plain words, fused with a
+semantic vector pass via reciprocal rank fusion, degrading
+silently to plain BM25 ranking when no embedder is configured.
+`--query-syntax text` forces plain BM25-only ranking;
+`--query-syntax raw` enables Lucene syntax (phrases, fields,
+booleans); `--query-syntax vector` runs semantic search only
+(and errors without an embedder, unlike `hybrid`). `-n` limits
 hits (default 5); `--socket` overrides the socket path.
-Hits print as `path:line [breadcrumb] (score)` plus text.
+`--path-prefix doc/deploy` restricts results to that path or
+its subtree, applied before ranking so a strong match outside
+the subtree can't crowd out a weaker one inside it. Hits print
+as `path:line [breadcrumb] (score)` plus text.
 
 To run the daemon in the foreground (logs, watching):
 
@@ -102,7 +109,8 @@ Launch the client jar's `mcp` subcommand over stdio:
 ```
 
 The `search` tool takes `index` and `query` (plus optional
-`top_n` and `syntax`: `text`, `raw`, or `vector`).
+`top_n` and `syntax`: `hybrid` (default), `text`, `raw`, or
+`vector`).
 
 ## Troubleshooting
 

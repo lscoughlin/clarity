@@ -22,6 +22,11 @@ public class IndexCommand implements Callable<Integer> {
             description = "Daemon socket path (default: <dir>/.clarity/clarity.sock).")
     Path socket;
 
+    @Option(
+            names = {"--lock"},
+            description = "Daemon lock file path (default: <dir>/.clarity/daemon.lock).")
+    Path lock;
+
     @Spec
     CommandSpec spec;
 
@@ -41,6 +46,6 @@ public class IndexCommand implements Callable<Integer> {
     }
 
     private DaemonClient.Target target() {
-        return DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket);
+        return DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket, lock);
     }
 }

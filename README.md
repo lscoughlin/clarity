@@ -54,6 +54,8 @@ index:
       include:
         - src/main/java/**/*.java
         - src/test/java/**/*.java
+daemon:
+  lock_file: /tmp/clarity/my.lock  # optional; default <base>/.clarity/daemon.lock
 ```
 
 Reference:
@@ -69,6 +71,11 @@ Reference:
   syntax should be used for comment extraction.
 - `index.<name>.source.include` — list of globs for source files;
   only comments are indexed.
+- `daemon.lock_file` — where the daemon spawn lock file lives.
+  Relative paths resolve against the project directory;
+  default `<base>/.clarity/daemon.lock`. The `index` /
+  `query` / `mcp` commands also take `--lock`, which beats
+  this key.
 
 Globs are Ant-style (`**` crosses directory boundaries). Keep
 include lists tight — broad globs over `node_modules/`, `target/`,
@@ -136,26 +143,43 @@ mvn -q -DskipTests package
    --dir /path/to/project` (or the daemon jar directly with
    the same flags).
 
-Queries are plain words by default (`query docs "C++ (notes)"`
-just works) and match heading words too — a heading match
-ranks above an equal body match. `--query-syntax raw` on the
-CLI (or `"syntax": "raw"` on the MCP `search` tool) enables
-Lucene query syntax for phrases, fields, and booleans
+Queries run as `hybrid` by default (`query docs "C++ (notes)"`
+just works): plain words, match heading words too — a heading
+match ranks above an equal body match — fused with a semantic
+vector pass via reciprocal rank fusion (RRF), so an agent
+doesn't have to guess up front whether a query is a keyword
+lookup or a paraphrase. Without an embedder configured, hybrid
+silently degrades to plain BM25 ranking rather than erroring.
+A hybrid hit's score is the fused RRF value, not a raw BM25 or
+cosine score.
+
+`--query-syntax text` (or `"syntax": "text"`) forces plain
+BM25-only ranking. `--query-syntax raw` (or `"syntax": "raw"`)
+enables Lucene query syntax for phrases, fields, and booleans
 (`heading_text:` addresses headings explicitly).
 
 `--query-syntax vector` (or `"syntax": "vector"`) runs a
-semantic search instead: the daemon embeds each chunk with a
-local MiniLM model (`Xenova/all-MiniLM-L6-v2`, 384 dims,
-Apache-2.0) and matches by cosine similarity, so paraphrases
-with no shared words still retrieve. Model bytes download once
-to `~/.cache/clarity/models/` on first daemon start; without
-them the daemon logs a warning and serves text search only.
-Indexing embeds one file's chunks per inference run (64-row
-batches). Vector scores are cosine-derived and not comparable
-to BM25 text scores. The auto-started daemon passes
-`--add-modules jdk.incubator.vector` when the runtime provides
-it (Lucene's SIMD path); add the flag yourself for foreground
-runs.
+semantic search only, and errors if no embedder is configured
+(unlike `hybrid`, which degrades instead): the daemon embeds
+each chunk with a local MiniLM model
+(`Xenova/all-MiniLM-L6-v2`, 384 dims, Apache-2.0) and matches
+by cosine similarity, so paraphrases with no shared words
+still retrieve. Model bytes download once to
+`~/.cache/clarity/models/` on first daemon start; without them
+the daemon logs a warning and serves text search only (hybrid
+queries still work, just without the vector fusion). Indexing
+embeds one file's chunks per inference run (64-row batches).
+Vector scores are cosine-derived and not comparable to BM25
+text scores. The auto-started daemon passes `--add-modules
+jdk.incubator.vector` when the runtime provides it (Lucene's
+SIMD path); add the flag yourself for foreground runs.
+
+`--path-prefix doc/deploy` (or `"path_prefix": "doc/deploy"`
+on the MCP `search` tool) restricts results to that path or
+its subtree, e.g. for one index spanning multiple doc tiers.
+The filter intersects with the text/vector query before
+ranking, not after, so a strong match outside the subtree
+can't crowd out a weaker one inside it.
 
 Runtime files live next to the config: `.clarity/clarity.sock`,
 `.clarity/daemon.lock`, `.clarity/daemon.log`. Commit
@@ -186,6 +210,8 @@ Runtime files live next to the config: `.clarity/clarity.sock`,
 - [x] Daemon-served queries over a Unix socket (CLI/MCP auto-start it)
 - [x] Runnable packaging (fat jars, MCP launch config)
 - [x] Vector search over chunk embeddings (opt-in `--query-syntax vector`)
+- [x] Hybrid text+vector ranking via RRF (default query mode)
+- [x] Path-prefix scoping within a single index (`--path-prefix`)
 - [ ] Published MCP tool definitions
 
 Contributions welcome — start with [AGENTS.md](AGENTS.md).

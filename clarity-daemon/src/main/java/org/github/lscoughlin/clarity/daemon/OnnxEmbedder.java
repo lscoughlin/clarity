@@ -64,9 +64,18 @@ public final class OnnxEmbedder implements Embedder, AutoCloseable {
      * caller can fall back to text-only search.
      */
     public static Optional<OnnxEmbedder> tryLoad() {
+        return tryLoad(OnnxEmbedder::load);
+    }
+
+    /** Loader seam so tests can simulate load failures without a model. */
+    interface Loader {
+        OnnxEmbedder load() throws IOException;
+    }
+
+    static Optional<OnnxEmbedder> tryLoad(Loader loader) {
         try {
-            return Optional.of(load());
-        } catch (Exception e) {
+            return Optional.of(loader.load());
+        } catch (Exception | LinkageError e) {
             LOG.atWarn()
                     .setMessage("vector search disabled: embedding model unavailable ({})")
                     .addArgument(e.getMessage())

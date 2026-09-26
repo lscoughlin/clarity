@@ -88,6 +88,86 @@ class IndexServiceTest {
     }
 
     @Test
+    void reindexReturnsAddedChangedRemovedCounts(@TempDir Path base) throws IOException {
+        writeCorpus(base);
+        try (IndexService service = IndexService.open(base)) {
+            Map<String, ReindexStats> first = service.reindex();
+            assertEquals(3, first.get("docs").added());
+            assertEquals(0, first.get("docs").changed());
+            assertEquals(0, first.get("docs").removed());
+            assertEquals(3, first.get("docs").docs());
+
+            Map<String, ReindexStats> second = service.reindex();
+            assertEquals(0, second.get("docs").added());
+            assertEquals(0, second.get("docs").changed());
+            assertEquals(0, second.get("docs").removed());
+        }
+    }
+
+    @Test
+    void reindexIndexReportsChangedOnEdit(@TempDir Path base) throws IOException {
+        writeCorpus(base);
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+            Files.writeString(
+                    base.resolve("doc/guide.md"), "# Guide\nHow to reindex the corpus v2.\n");
+            ReindexStats stats = service.reindexIndex("docs");
+            assertEquals(0, stats.added());
+            assertEquals(1, stats.changed());
+            assertEquals(0, stats.removed());
+        }
+    }
+
+    @Test
+    void reindexIndexUnknownNameThrows(@TempDir Path base) throws IOException {
+        writeCorpus(base);
+        try (IndexService service = IndexService.open(base)) {
+            assertThrows(IllegalArgumentException.class, () -> service.reindexIndex("nope"));
+        }
+    }
+
+    @Test
+    void reindexReportsRemoved(@TempDir Path base) throws IOException {
+        writeCorpus(base);
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+            Files.delete(base.resolve("doc/guide.md"));
+            ReindexStats stats = service.reindexIndex("docs");
+            assertEquals(1, stats.removed());
+            assertEquals(2, stats.docs());
+        }
+    }
+
+    @Test
+    void driftPassClassifiesUnchangedFilesAsChangedNotAdded(@TempDir Path base) throws IOException {
+        Files.createDirectories(base.resolve(".clarity"));
+        Files.createDirectories(base.resolve("doc"));
+        Files.writeString(
+                base.resolve(".clarity/config.yaml"),
+                "index:\n  docs:\n    index_path: index/docs\n    markdown:\n      - doc/**/*.md\n");
+        Files.writeString(base.resolve("doc/cats.md"), "# Felines\nAbout whiskered companions.\n");
+        Files.writeString(base.resolve("doc/dogs.md"), "# Canines\nAbout barking companions.\n");
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+        }
+        // Reopening with an embedder forces a full rewrite (embeddingStale),
+        // but the files themselves are unmodified since the first pass.
+        var vectors =
+                Map.of(
+                        "Felines About whiskered companions.", new float[] {1, 0},
+                        "Canines About barking companions.", new float[] {0, 1});
+        try (IndexService service =
+                IndexService.open(
+                        base,
+                        ConfigLoader.load(base),
+                        new VectorSearchTest.FixedEmbedder("test-1", vectors))) {
+            Map<String, ReindexStats> stats = service.reindex();
+            assertEquals(0, stats.get("docs").added());
+            assertEquals(2, stats.get("docs").changed());
+        }
+    }
+
+    @Test
     void punctuatedQueryReturnsMatches(@TempDir Path base) throws IOException {
         Files.createDirectories(base.resolve(".clarity"));
         Files.createDirectories(base.resolve("doc"));
@@ -158,7 +238,8 @@ class IndexServiceTest {
                             hits.get(0).headingPath(),
                             hits.get(0).text(),
                             hits.get(0).score(),
-                            0);
+                            0,
+                            hits.get(0).truncated());
             assertEquals("doc/guide.md", unknown.location());
         }
     }
@@ -233,6 +314,64 @@ class IndexServiceTest {
                     service.search("docs", "heading_text:mango", 10, SearchBackend.Syntax.RAW);
             assertEquals(1, hits.size());
             assertEquals("doc/a.md", hits.get(0).sourcePath());
+        }
+    }
+
+    @Test
+    void pathPrefixFiltersBeforeRankingNotAfter(@TempDir Path base) throws IOException {
+        Files.createDirectories(base.resolve(".clarity"));
+        Files.createDirectories(base.resolve("doc/control"));
+        Files.createDirectories(base.resolve("doc/deploy"));
+        Files.writeString(
+                base.resolve(".clarity/config.yaml"),
+                "index:\n  docs:\n    index_path: index/docs\n    markdown:\n      - doc/**/*.md\n");
+        // Stronger BM25 match (repeats the term), outside the scoped subtree.
+        Files.writeString(
+                base.resolve("doc/control/setup.md"),
+                "# Setup\nwidget widget widget configuration for the control tier.\n");
+        // Weaker match, inside the scoped subtree.
+        Files.writeString(
+                base.resolve("doc/deploy/setup.md"), "# Setup\nwidget configuration for deploy.\n");
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+
+            // Unscoped: the stronger control-tier match ranks first.
+            List<Hit> unscoped = service.search("docs", "widget", 10, SearchBackend.Syntax.TEXT);
+            assertEquals("doc/control/setup.md", unscoped.get(0).sourcePath());
+
+            // Scoped to doc/deploy: the weaker in-subtree match is returned,
+            // proving the filter intersects before ranking (a naive
+            // topN=10-then-filter approach would pass this even if it only
+            // post-filtered, so topN=1 here is load-bearing).
+            List<Hit> scoped =
+                    service.search("docs", "widget", 1, SearchBackend.Syntax.TEXT, "doc/deploy");
+            assertEquals(1, scoped.size());
+            assertEquals("doc/deploy/setup.md", scoped.get(0).sourcePath());
+        }
+    }
+
+    @Test
+    void pathPrefixMatchingNothingReturnsEmpty(@TempDir Path base) throws IOException {
+        writeCorpus(base);
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+            List<Hit> hits =
+                    service.search(
+                            "docs", "reindex", 10, SearchBackend.Syntax.TEXT, "no/such/tree");
+            assertTrue(hits.isEmpty());
+        }
+    }
+
+    @Test
+    void absolutePathPrefixIsRejected(@TempDir Path base) throws IOException {
+        writeCorpus(base);
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+            assertThrows(
+                    IllegalArgumentException.class,
+                    () ->
+                            service.search(
+                                    "docs", "reindex", 10, SearchBackend.Syntax.TEXT, "/doc"));
         }
     }
 

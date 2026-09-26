@@ -1,6 +1,8 @@
 package org.github.lscoughlin.clarity.parser;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -50,5 +52,21 @@ class ClarityConfigTest {
         assertThrows(
                 RuntimeException.class,
                 () -> ClarityConfig.parse("index:\n  tiny:\n    index_path: /tmp/x\n    bogus_key: 1\n"));
+    }
+
+    @Test
+    void daemonSectionParses() {
+        ClarityConfig config =
+                ClarityConfig.parse("index: {}\ndaemon:\n  lock_file: /tmp/x/daemon.lock\n");
+
+        assertEquals("/tmp/x/daemon.lock", config.daemon().lockFile());
+    }
+
+    @Test
+    void absentDaemonSectionDefaults() {
+        ClarityConfig config = ClarityConfig.parse("index: {}\n");
+
+        assertNotNull(config.daemon());
+        assertNull(config.daemon().lockFile());
     }
 }

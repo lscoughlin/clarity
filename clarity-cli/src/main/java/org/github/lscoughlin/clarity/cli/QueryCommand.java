@@ -26,6 +26,11 @@ public class QueryCommand implements Callable<Integer> {
             description = "Daemon socket path (default: <dir>/.clarity/clarity.sock).")
     Path socket;
 
+    @Option(
+            names = {"--lock"},
+            description = "Daemon lock file path (default: <dir>/.clarity/daemon.lock).")
+    Path lock;
+
     @Spec
     CommandSpec spec;
 
@@ -43,30 +48,32 @@ public class QueryCommand implements Callable<Integer> {
 
     @Option(
             names = {"--query-syntax"},
-            defaultValue = "text",
+            defaultValue = "hybrid",
             description =
-                    "Query interpretation: text (plain words), raw (Lucene syntax),"
-                            + " or vector (semantic search, needs an embedded index).")
-    String syntax = "text";
+                    "Query interpretation: hybrid (default; fuses text and vector ranking,"
+                            + " degrading to text-only without an embedded index), text (plain words),"
+                            + " raw (Lucene syntax), or vector (semantic search, needs an embedded index).")
+    String syntax = "hybrid";
+
+    @Option(
+            names = {"--path-prefix"},
+            description = "Restrict results to this path or its subtree, e.g. doc/deploy.")
+    String pathPrefix;
 
     @Override
     public Integer call() {
-        SearchBackend.Syntax mode =
-                "raw".equalsIgnoreCase(syntax)
-                        ? SearchBackend.Syntax.RAW
-                        : "vector".equalsIgnoreCase(syntax)
-                                ? SearchBackend.Syntax.VECTOR
-                                : SearchBackend.Syntax.TEXT;
+        SearchBackend.Syntax mode = SearchBackend.Syntax.parse(syntax);
         try {
             DaemonClient.Target target =
-                    DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket);
+                    DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket, lock);
             DaemonClient.ensureRunning(target);
             List<Hit> hits =
-                    DaemonClient.search(target, indexName, String.join(" ", terms), topN, mode);
+                    DaemonClient.search(
+                            target, indexName, String.join(" ", terms), topN, mode, pathPrefix);
             var out = spec.commandLine().getOut();
             for (var hit : hits) {
                 out.printf(
-                        "%s [%s] (%.3f)%n%s%n%n",
+                        "%s [%s] (%.5f)%n%s%n%n",
                         hit.location(), hit.heading(), hit.score(), hit.text());
             }
             return 0;

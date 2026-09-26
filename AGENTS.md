@@ -17,7 +17,7 @@ daemon with watcher and auto-start, shaded fat jars,
 
 ## Repo layout
 
-- `pom.xml` — parent pom (Java 26, UTF-8): `dependencyManagement`
+- `pom.xml` — parent pom (Java 25, UTF-8): `dependencyManagement`
   pins (Lucene 10.5.1, Jackson 3, commonmark-java, SLF4J/Logback,
   picocli, MCP SDK 2.0.1, JUnit 5) plus surefire config.
 - `clarity-parser/` — config model, Markdown/YAML/comment
@@ -33,8 +33,13 @@ daemon with watcher and auto-start, shaded fat jars,
   `~/.cache/clarity/models/` at runtime; deterministic stub in
   tests) with COSINE `KnnFloatVectorField`s, model id + dims in
   commit metadata, fail-fast drift check, full re-embed upgrade
-  from pre-vector indexes. Text-only queries score exactly as
-  before; vector is opt-in via `Syntax.VECTOR`. Indexing
+  from pre-vector indexes. Explicit `Syntax.TEXT`/`Syntax.RAW`
+  queries score exactly as before; `Syntax.VECTOR` is opt-in and
+  errors without an embedder. `Syntax.HYBRID` (the default when
+  a caller doesn't specify a syntax — see `Syntax.parse`) fuses
+  BM25 and cosine ranking via reciprocal rank fusion, silently
+  degrading to text-only whenever the vector leg is unavailable.
+  Indexing
   embeds via `embedBatch` (64-row runs per file; values
   identical to single `embed`). The auto-spawned daemon adds
   `--add-modules jdk.incubator.vector` when the spawning
@@ -53,8 +58,20 @@ adapter. Each module owns `src/main/java`, `src/main/resources`,
 
 ## Toolchain and commands
 
-- JDK 26 (Homebrew `openjdk` 26.x works), Maven 3.9+.
-- Build + test: `mvn verify`
+- JDK 25 minimum; default build runs on JDK 26 (Homebrew
+  `openjdk` 26.x works), Maven 3.9+. `~/.m2/toolchains.xml`
+  declares the default JDK plus the GraalVM 25 toolchain
+  (sdkman `25.0.2-graal`).
+- Build + test: `mvn verify` (offline-safe: `mvn -o verify`).
+- Native binary (GraalVM `native` profile, needs network once
+  for plugins): `JAVA_HOME=~/.sdkman/candidates/java/25.0.2-graal
+  mvn -Pnative package` → `clarity-cli/target/clarity`.
+  Compiles/tests on the GraalVM toolchain, then links with
+  `native-maven-plugin`. Text and vector search both work —
+  the ONNX dylibs ship as image resources with a traced
+  `jni-config.json` (`clarity-daemon/.../META-INF/native-image/`).
+  `OnnxEmbedder.tryLoad` still degrades to text-only if the
+  natives ever fail to load.
 - Fast test loop: `mvn -q test -Dtest=<TestName>`
 - Format convention: default Maven/Java style, 4-space indents,
   UTF-8. No formatter plugin configured yet — match surrounding
@@ -87,7 +104,10 @@ adapter. Each module owns `src/main/java`, `src/main/resources`,
 ### Tech stack (do not swap without discussion)
 
 Lucene (+ `KnnFloatVectorField`) · Jackson 3 · commonmark-java ·
-Logback/SLF4J · MCP Java SDK · picocli · ONNX Runtime 1.30.0
+Logback/SLF4J · MCP Java SDK · picocli (+ `picocli-codegen`
+as a compile-time-only annotation processor: it emits the
+`META-INF/native-image` reflection config the native profile
+needs; not a runtime dependency) · ONNX Runtime 1.30.0
 (daemon only, justified: local-only MiniLM inference with no
 network at test time — tests use a stub embedder and
 `mvn -o verify` must stay green). Prefer these over adding
@@ -104,7 +124,7 @@ the PR/commit message.
 - Log via SLF4J (Logback backend); no `System.out` in library or
   server code. All runtime logging goes to stderr; stdout is
   reserved (MCP transport, CLI result printing).
-- Modern Java 26 style throughout: `var` for locals with
+- Modern Java 25 style throughout: `var` for locals with
   evident initializer types (fields, params, and null
   initializers keep explicit types — Java requires it),
   enhanced `switch` (arrows, pattern matching), and the SLF4J

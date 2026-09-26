@@ -18,16 +18,44 @@ public interface SearchBackend extends Closeable {
     int DEFAULT_TOP_N = 5;
 
     /**
-     * Query interpretation: plain text (escaped), raw Lucene syntax, or
+     * Query interpretation: plain text (escaped), raw Lucene syntax,
      * semantic vector search (the query is embedded and matched by
-     * cosine similarity; requires an index written with an embedder).
-     * Vector scores derive from cosine similarity and are not
-     * comparable to BM25 text scores.
+     * cosine similarity; requires an index written with an embedder),
+     * or hybrid (the default). Vector scores derive from cosine
+     * similarity and are not comparable to BM25 text scores.
      */
     enum Syntax {
         TEXT,
         RAW,
-        VECTOR
+        VECTOR,
+        /**
+         * Fuses BM25 text ranking and cosine vector ranking via
+         * reciprocal rank fusion (RRF). Silently degrades to text-only
+         * ranking when no embedder is configured, or if the vector leg
+         * fails for any reason — never throws for that. {@code Hit.score()}
+         * for hybrid results is a fused RRF value, not a raw BM25 or
+         * cosine score, and is not comparable to scores from any other
+         * syntax.
+         */
+        HYBRID;
+
+        /**
+         * Parses a syntax string case-insensitively; {@code text},
+         * {@code raw}, and {@code vector} select those modes, anything
+         * else (including null or blank) defaults to {@link #HYBRID}.
+         */
+        public static Syntax parse(String value) {
+            if ("text".equalsIgnoreCase(value)) {
+                return TEXT;
+            }
+            if ("raw".equalsIgnoreCase(value)) {
+                return RAW;
+            }
+            if ("vector".equalsIgnoreCase(value)) {
+                return VECTOR;
+            }
+            return HYBRID;
+        }
     }
 
     /**
@@ -54,6 +82,27 @@ public interface SearchBackend extends Closeable {
     /** Top-{@code topN} matches with explicit query interpretation. */
     default List<Hit> search(String query, int topN, Syntax syntax) throws IOException {
         return search(query, topN);
+    }
+
+    /**
+     * Top-{@code topN} matches restricted to documents whose {@code path}
+     * equals {@code pathPrefix} or is nested under it as a directory; null
+     * or blank {@code pathPrefix} means no restriction. Backends that don't
+     * implement scoping simply ignore it.
+     */
+    default List<Hit> search(String query, int topN, Syntax syntax, String pathPrefix) throws IOException {
+        return search(query, topN, syntax, pathPrefix, false);
+    }
+
+    /**
+     * Top-{@code topN} matches as above; {@code fullText} true returns each
+     * hit's complete chunk, false (the default) returns a bounded,
+     * highlighted snippet for chunks above the backend's size threshold.
+     * Backends that don't implement snippeting simply ignore it.
+     */
+    default List<Hit> search(String query, int topN, Syntax syntax, String pathPrefix, boolean fullText)
+            throws IOException {
+        return search(query, topN, syntax);
     }
 
     /**

@@ -1,0 +1,171 @@
+[
+  {
+    "name": "ch.qos.logback.core.status.NopStatusListener",
+    "allDeclaredConstructors": true
+  },
+  {
+    "name": "org.apache.lucene.analysis.tokenattributes.PackedTokenAttributeImpl",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.lucene.codecs.KnnVectorsFormat"
+  },
+  {
+    "name": "org.apache.lucene.codecs.hnsw.FlatVectorsFormat"
+  },
+  {
+    "name": "org.apache.lucene.codecs.lucene104.Lucene104Codec"
+  },
+  {
+    "name": "org.apache.lucene.codecs.lucene104.Lucene104HnswScalarQuantizedVectorsFormat"
+  },
+  {
+    "name": "org.apache.lucene.codecs.lucene104.Lucene104PostingsFormat"
+  },
+  {
+    "name": "org.apache.lucene.codecs.lucene104.Lucene104ScalarQuantizedVectorsFormat"
+  },
+  {
+    "name": "org.apache.lucene.codecs.lucene99.Lucene99FlatVectorsFormat"
+  },
+  {
+    "name": "org.apache.lucene.codecs.lucene99.Lucene99HnswVectorsFormat"
+  },
+  {
+    "name": "org.apache.lucene.index.Term"
+  },
+  {
+    "name": "org.apache.lucene.index.TermStates$PendingTermLookup[]"
+  },
+  {
+    "name": "org.apache.lucene.internal.hppc.FloatArrayList"
+  },
+  {
+    "name": "org.apache.lucene.internal.hppc.IntArrayList"
+  },
+  {
+    "name": "org.apache.lucene.internal.hppc.IntHashSet"
+  },
+  {
+    "name": "org.apache.lucene.internal.hppc.IntObjectHashMap"
+  },
+  {
+    "name": "org.apache.lucene.internal.hppc.LongHashSet"
+  },
+  {
+    "name": "org.apache.lucene.internal.hppc.LongObjectHashMap"
+  },
+  {
+    "name": "org.apache.lucene.search.BoostAttributeImpl",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.lucene.search.TermStatistics[]"
+  },
+  {
+    "name": "org.apache.lucene.store.MemorySegmentIndexInputProvider",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": []
+      }
+    ]
+  },
+  {
+    "name": "org.apache.lucene.util.BitSet"
+  },
+  {
+    "name": "org.apache.lucene.util.ByteBlockPool"
+  },
+  {
+    "name": "org.apache.lucene.util.BytesRef"
+  },
+  {
+    "name": "org.apache.lucene.util.FixedBitSet"
+  },
+  {
+    "name": "org.apache.lucene.util.FrequencyTrackingRingBuffer"
+  },
+  {
+    "name": "org.apache.lucene.util.FrequencyTrackingRingBuffer$IntBag"
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.daemon.DaemonMain",
+    "fields": [
+      {
+        "name": "dir"
+      },
+      {
+        "name": "socketOverride"
+      }
+    ]
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.daemon.Hit",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.daemon.SocketProtocol$ControlRequest",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.daemon.SocketProtocol$SearchRequest",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.daemon.SocketProtocol$SearchResponse",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.daemon.SocketProtocol$StatusResponse",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "java.util.Map"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig$IndexConfig",
+    "methods": [
+      {
+        "name": "<init>",
+        "parameterTypes": [
+          "java.lang.String",
+          "java.util.List",
+          "java.util.List",
+          "org.github.lscoughlin.clarity.parser.ClarityConfig$SourceConfig"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig$SourceConfig"
+  }
+]

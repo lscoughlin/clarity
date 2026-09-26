@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.ControlRequest;
+import org.github.lscoughlin.clarity.daemon.SocketProtocol.ReindexRequest;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.SearchRequest;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.SearchResponse;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.StatusResponse;
@@ -45,18 +46,55 @@ public final class DaemonClient {
         void spawn(Target target) throws IOException;
     }
 
-    /** Resolved project base plus its derived socket path. */
-    public record Target(Path baseDir, Path socketPath) {}
+    /** Resolved project base plus its derived socket and lock paths. */
+    public record Target(Path baseDir, Path socketPath, Path lockPath) {}
 
     private DaemonClient() {}
 
     public static Target target(Path baseDir, Path socketOverride) {
+        return target(baseDir, socketOverride, null);
+    }
+
+    public static Target target(Path baseDir, Path socketOverride, Path lockOverride) {
         var base = baseDir.toAbsolutePath().normalize();
         var socket =
                 socketOverride != null
                         ? socketOverride.toAbsolutePath().normalize()
                         : SocketProtocol.Paths.socketFor(base);
-        return new Target(base, socket);
+        return new Target(base, socket, lockFor(base, lockOverride));
+    }
+
+    static Path lockFor(Path base, Path lockOverride) {
+        if (lockOverride != null) {
+            return lockOverride.toAbsolutePath().normalize();
+        }
+        var fromConfig = lockFromConfig(base);
+        if (fromConfig != null) {
+            return fromConfig;
+        }
+        return SocketProtocol.Paths.lockFor(base);
+    }
+
+    /**
+     * {@code daemon.lock_file} from {@code .clarity/config.yaml},
+     * resolved against the base dir. Absent or unreadable config
+     * means "no key", never a failure.
+     */
+    private static Path lockFromConfig(Path base) {
+        if (!java.nio.file.Files.isRegularFile(base.resolve(ConfigLoader.CONFIG_RELATIVE))) {
+            return null;
+        }
+        try {
+            var lockFile = ConfigLoader.load(base).daemon().lockFile();
+            if (lockFile == null || lockFile.isBlank()) {
+                return null;
+            }
+            var path = Path.of(lockFile);
+            return (path.isAbsolute() ? path : base.resolve(path)).normalize();
+        } catch (RuntimeException e) {
+            LOG.atDebug().setMessage("ignoring lock_file from unreadable config").setCause(e).log();
+            return null;
+        }
     }
 
     public static Path socketFor(Path baseDir) {
@@ -75,7 +113,7 @@ public final class DaemonClient {
         if (tryConnect(target)) {
             return;
         }
-        var lockPath = SocketProtocol.Paths.lockFor(target.baseDir());
+        var lockPath = target.lockPath();
         Files.createDirectories(lockPath.getParent());
         try (FileChannel channel =
                         FileChannel.open(
@@ -103,11 +141,28 @@ public final class DaemonClient {
     public static Map<String, Integer> reindex(Target target, Spawner spawner) throws IOException {
         ensureRunning(target, spawner);
         StatusResponse response =
-                roundTrip(target, new ControlRequest("reindex"), StatusResponse.class);
+                roundTrip(target, new ReindexRequest(null), StatusResponse.class);
         if (!response.ok()) {
             throw new IOException("daemon error: " + response.error());
         }
         return response.counts();
+    }
+
+    /** Reindexes one named index, or every index when {@code indexOrNull} is null. */
+    public static Map<String, ReindexStats> reindexWithStats(Target target, String indexOrNull)
+            throws IOException {
+        return reindexWithStats(target, defaultSpawner(), indexOrNull);
+    }
+
+    public static Map<String, ReindexStats> reindexWithStats(
+            Target target, Spawner spawner, String indexOrNull) throws IOException {
+        ensureRunning(target, spawner);
+        StatusResponse response =
+                roundTrip(target, new ReindexRequest(indexOrNull), StatusResponse.class);
+        if (!response.ok()) {
+            throw new IOException("daemon error: " + response.error());
+        }
+        return response.stats();
     }
 
     public static List<Hit> search(
@@ -117,7 +172,7 @@ public final class DaemonClient {
             int topN,
             SearchBackend.Syntax syntax)
             throws IOException {
-        return search(target, defaultSpawner(), index, query, topN, syntax);
+        return search(target, defaultSpawner(), index, query, topN, syntax, null);
     }
 
     public static List<Hit> search(
@@ -128,11 +183,34 @@ public final class DaemonClient {
             int topN,
             SearchBackend.Syntax syntax)
             throws IOException {
+        return search(target, spawner, index, query, topN, syntax, null);
+    }
+
+    public static List<Hit> search(
+            Target target,
+            String index,
+            String query,
+            int topN,
+            SearchBackend.Syntax syntax,
+            String pathPrefix)
+            throws IOException {
+        return search(target, defaultSpawner(), index, query, topN, syntax, pathPrefix);
+    }
+
+    public static List<Hit> search(
+            Target target,
+            Spawner spawner,
+            String index,
+            String query,
+            int topN,
+            SearchBackend.Syntax syntax,
+            String pathPrefix)
+            throws IOException {
         ensureRunning(target, spawner);
         SearchResponse response =
                 roundTrip(
                         target,
-                        new SearchRequest(index, query, topN, syntax.name().toLowerCase()),
+                        new SearchRequest(index, query, topN, syntax.name().toLowerCase(), pathPrefix),
                         SearchResponse.class);
         if (!response.ok()) {
             throw new IOException("daemon error: " + response.error());
@@ -140,13 +218,28 @@ public final class DaemonClient {
         return response.hits();
     }
 
-    public static void health(Target target, Spawner spawner) throws IOException {
+    public static Map<String, Integer> health(Target target) throws IOException {
+        return health(target, defaultSpawner());
+    }
+
+    public static Map<String, Integer> health(Target target, Spawner spawner) throws IOException {
         ensureRunning(target, spawner);
         StatusResponse response =
                 roundTrip(target, new ControlRequest("health"), StatusResponse.class);
         if (!response.ok()) {
             throw new IOException("daemon error: " + response.error());
         }
+        return response.counts();
+    }
+
+    /** Configured index names and their current document counts. */
+    public static Map<String, Integer> listIndexes(Target target) throws IOException {
+        return listIndexes(target, defaultSpawner());
+    }
+
+    public static Map<String, Integer> listIndexes(Target target, Spawner spawner)
+            throws IOException {
+        return health(target, spawner);
     }
 
     private static <T> T roundTrip(Target target, Object request, Class<T> responseType)
@@ -207,6 +300,18 @@ public final class DaemonClient {
      * sibling daemon jar, or the current classpath for classes-mode runs.
      */
     static List<String> daemonCommand(Target target) throws IOException {
+        var self = nativeImagePath();
+        if (self != null) {
+            // Native binary: no java launcher and no jar to spawn,
+            // so re-invoke this executable as `clarity daemon`.
+            return List.of(
+                    self,
+                    "daemon",
+                    "--dir",
+                    target.baseDir().toString(),
+                    "--socket",
+                    target.socketPath().toString());
+        }
         var head = new ArrayList<>(List.of(javaBin()));
         if (vectorModulePresent()) {
             head.add("--add-modules");
@@ -249,6 +354,18 @@ public final class DaemonClient {
 
     private static String javaBin() {
         return Path.of(System.getProperty("java.home"), "bin", "java").toString();
+    }
+
+    /**
+     * Path of the running executable when compiled to a GraalVM native
+     * image (which has no {@code java} launcher or jar to spawn),
+     * otherwise null.
+     */
+    static String nativeImagePath() {
+        if (System.getProperty("org.graalvm.nativeimage.imagecode") == null) {
+            return null;
+        }
+        return ProcessHandle.current().info().command().orElse(null);
     }
 
     /** Incubator module enabling Lucene's SIMD vector path. */

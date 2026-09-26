@@ -1,0 +1,26 @@
+[
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig$IndexConfig",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig$DaemonConfig",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  },
+  {
+    "name": "org.github.lscoughlin.clarity.parser.ClarityConfig$SourceConfig",
+    "allDeclaredConstructors": true,
+    "allDeclaredMethods": true,
+    "allDeclaredFields": true
+  }
+]

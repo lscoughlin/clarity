@@ -13,9 +13,10 @@ import tools.jackson.dataformat.yaml.YAMLMapper;
  * {@code SNAKE_CASE} naming strategy on the loader, so
  * {@code index_path} binds to {@link IndexConfig#indexPath}.
  */
-public record ClarityConfig(Map<String, IndexConfig> index) {
+public record ClarityConfig(Map<String, IndexConfig> index, DaemonConfig daemon) {
     public ClarityConfig {
         index = index == null ? Map.of() : Map.copyOf(index);
+        daemon = daemon == null ? new DaemonConfig(null) : daemon;
     }
 
     /** Parses {@code .clarity/config.yaml} content; unknown keys fail fast. */
@@ -38,6 +39,9 @@ public record ClarityConfig(Map<String, IndexConfig> index) {
             yaml = yaml == null ? List.of() : List.copyOf(yaml);
         }
     }
+
+    /** Daemon runtime paths; all keys optional (absent → defaults). */
+    public record DaemonConfig(String lockFile) {}
 
     public record SourceConfig(List<String> kind, List<String> include) {
         public SourceConfig {

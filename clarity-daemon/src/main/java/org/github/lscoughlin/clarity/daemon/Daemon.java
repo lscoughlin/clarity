@@ -81,9 +81,29 @@ public final class Daemon implements Closeable {
     public synchronized List<Hit> search(
             String indexName, String query, int topN, SearchBackend.Syntax syntax)
             throws IOException {
+        return search(indexName, query, topN, syntax, null);
+    }
+
+    public synchronized List<Hit> search(
+            String indexName, String query, int topN, SearchBackend.Syntax syntax, String pathPrefix)
+            throws IOException {
+        return search(indexName, query, topN, syntax, pathPrefix, false);
+    }
+
+    public synchronized List<Hit> search(
+            String indexName,
+            String query,
+            int topN,
+            SearchBackend.Syntax syntax,
+            String pathPrefix,
+            boolean fullText)
+            throws IOException {
         inFlight++;
         try {
-            var hits = service.search(indexName, query, topN, syntax);
+            var hits = service.search(indexName, query, topN, syntax, pathPrefix, fullText);
+            // Fire-and-forget: queues a pass for the background loop to pick up
+            // (within POLL_MILLIS), so callers never wait on it.
+            requestReindex();
             touch();
             return hits;
         } finally {
@@ -105,17 +125,44 @@ public final class Daemon implements Closeable {
         reindexQueued = true;
     }
 
-    /** Runs queued passes until none remain. Event/config passes mark activity. */
+    /**
+     * Runs queued passes until none remain. Watcher-triggered passes always
+     * mark activity; a scan-only pass marks activity too when it actually
+     * finds changes (note: a search-triggered pass already sets
+     * {@code reindexQueued}, so it always counts as activity here regardless
+     * of this check).
+     */
     public synchronized void drainReindex() throws IOException {
         var activity = reindexQueued;
         reindexQueued = false;
         var scan = scanQueued;
         scanQueued = false;
         if (activity || scan) {
-            service.reindex();
-            if (activity) {
+            var stats = service.reindex();
+            if (activity || hasChanges(stats)) {
                 touch();
             }
+        }
+    }
+
+    private static boolean hasChanges(Map<String, ReindexStats> stats) {
+        return stats.values().stream()
+                .anyMatch(s -> s.added() > 0 || s.changed() > 0 || s.removed() > 0);
+    }
+
+    /** Reindexes one named index, or every index when {@code indexOrNull} is null. */
+    public synchronized Map<String, ReindexStats> reindexNow(String indexOrNull)
+            throws IOException {
+        inFlight++;
+        try {
+            var stats =
+                    indexOrNull == null
+                            ? service.reindex()
+                            : Map.of(indexOrNull, service.reindexIndex(indexOrNull));
+            touch();
+            return stats;
+        } finally {
+            inFlight--;
         }
     }
 

@@ -1,0 +1,24 @@
+version: '3'
+
+tasks:
+  build:
+    desc: Build and test the project (default JDK toolchain).
+    cmds:
+      - mvn verify
+
+  build:native:
+    desc: Link the GraalVM native binary (needs network once for plugins).
+    cmds:
+      - JAVA_HOME="$HOME/.sdkman/candidates/java/25.0.2-graal" mvn -Pnative package
+
+  build:bundle:
+    desc: Package clarity-cli as a fat jar (with tests).
+    cmds:
+      - mvn package -pl clarity-cli -am
+
+  dist:
+    desc: Bundle the fat jar and launcher into dist/clarity.zip.
+    deps: [build:bundle]
+    cmds:
+      - mkdir -p dist
+      - zip -j dist/clarity.zip clarity-cli/src/bash/clarity.sh clarity-cli/target/clarity-cli-1.0-SNAPSHOT.jar

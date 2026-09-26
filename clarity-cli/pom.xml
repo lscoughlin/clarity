@@ -12,8 +12,8 @@
     <artifactId>clarity-cli</artifactId>
 
     <properties>
-        <maven.compiler.source>26</maven.compiler.source>
-        <maven.compiler.target>26</maven.compiler.target>
+        <maven.compiler.source>25</maven.compiler.source>
+        <maven.compiler.target>25</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -52,6 +52,22 @@
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- Generates META-INF/native-image reflection config
+                         for the picocli commands (needed by native-image;
+                         harmless for JVM builds). -->
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>info.picocli</groupId>
+                            <artifactId>picocli-codegen</artifactId>
+                            <version>4.7.7</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <executions>
                     <execution>
@@ -75,5 +91,50 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>native</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.graalvm.buildtools</groupId>
+                        <artifactId>native-maven-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>build-native</id>
+                                <goals>
+                                    <goal>compile-no-fork</goal>
+                                </goals>
+                                <phase>package</phase>
+                            </execution>
+                        </executions>
+                        <configuration>
+                            <imageName>clarity</imageName>
+                            <mainClass>org.github.lscoughlin.clarity.cli.ClarityMain</mainClass>
+                            <!-- True native binary or fail; third-party
+                                 reachability metadata (Lucene, Jackson,
+                                 picocli, MCP SDK) from the GraalVM
+                                 reachability repository. -->
+                            <buildArgs>
+                                <buildArg>--no-fallback</buildArg>
+                                <!-- Lucene links its Panama (FFM) downcalls
+                                     dynamically; allow that at runtime
+                                     instead of pre-registering every
+                                     descriptor. -->
+                                <buildArg>--enable-native-access=ALL-UNNAMED</buildArg>
+                                <!-- Lucene mmaps index segments through
+                                     shared FFM arenas. -->
+                                <buildArg>-H:+SharedArenaSupport</buildArg>
+                            </buildArgs>
+                            <metadataRepository>
+                                <enabled>true</enabled>
+                            </metadataRepository>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 
 </project>

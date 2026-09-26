@@ -57,7 +57,7 @@ class AutoStartTest {
                     InputStream in = Channels.newInputStream(conn);
                     OutputStream out = Channels.newOutputStream(conn)) {
                 SocketFrames.read(in);
-                Hit hit = new Hit("docs", "doc/guide.md", List.of("Guide"), "hi", 1.0f, 7);
+                Hit hit = new Hit("docs", "doc/guide.md", List.of("Guide"), "hi", 1.0f, 7, false);
                 SocketFrames.write(
                         out, SocketProtocol.JSON.writeValueAsBytes(SearchResponse.ok(List.of(hit))));
             } catch (Exception e) {
@@ -81,7 +81,7 @@ class AutoStartTest {
                     spawns.incrementAndGet();
                     stubAcceptors.add(new StubAcceptor(target.socketPath()));
                 };
-        DaemonClient.Target target = new DaemonClient.Target(base, socket);
+        DaemonClient.Target target = DaemonClient.target(base, socket);
 
         List<Hit> hits =
                 DaemonClient.search(
@@ -106,7 +106,7 @@ class AutoStartTest {
                     spawns.incrementAndGet();
                     stubAcceptors.add(new StubAcceptor(target.socketPath()));
                 };
-        DaemonClient.Target target = new DaemonClient.Target(base, socket);
+        DaemonClient.Target target = DaemonClient.target(base, socket);
 
         DaemonClient.health(target, spawner);
 
@@ -118,7 +118,7 @@ class AutoStartTest {
     @Test
     void rivalServerMeansNoSpawn(@TempDir Path base) throws IOException {
         Path socket = SocketTestHelper.freshSocket("rival");
-        DaemonClient.Target target = new DaemonClient.Target(base, socket);
+        DaemonClient.Target target = DaemonClient.target(base, socket);
         try (StubAcceptor rival = new StubAcceptor(socket)) {
             DaemonClient.health(
                     target,
