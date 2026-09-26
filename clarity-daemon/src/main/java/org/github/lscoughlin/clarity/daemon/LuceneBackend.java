@@ -15,6 +15,7 @@ import org.apache.lucene.analysis.standard.StandardAnalyzer;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.document.KnnFloatVectorField;
+import org.apache.lucene.document.StoredField;
 import org.apache.lucene.document.StringField;
 import org.apache.lucene.document.TextField;
 import org.apache.lucene.index.DirectoryReader;
@@ -43,6 +44,8 @@ import org.apache.lucene.store.FSDirectory;
 import org.github.lscoughlin.clarity.parser.Chunk;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
 
 /**
  * Lucene implementation of {@link SearchBackend}: one instance owns one
@@ -64,9 +67,10 @@ final class LuceneBackend implements SearchBackend {
     private static final String META_SCHEMA = "schema_version";
     /**
      * Index schema generation: 1 adds the stored {@code line} field, 2
-     * adds the analyzed {@code heading_text} field.
+     * adds the analyzed {@code heading_text} field, 3 adds the stored
+     * {@code frontmatter} field.
      */
-    private static final String SCHEMA_VERSION = "2";
+    private static final String SCHEMA_VERSION = "3";
 
     /** Heading matches rank above equal body matches in TEXT mode. */
     private static final float HEADING_BOOST = 2.0f;
@@ -156,6 +160,18 @@ final class LuceneBackend implements SearchBackend {
         doc.add(new StringField("line", Integer.toString(chunk.startLine()), Field.Store.YES));
         if (!chunk.heading().isEmpty()) {
             doc.add(new TextField("heading_text", chunk.heading(), Field.Store.NO));
+        }
+        if (!chunk.frontmatter().isEmpty()) {
+            try {
+                doc.add(new StoredField("frontmatter", SocketProtocol.JSON.writeValueAsString(chunk.frontmatter())));
+            } catch (JacksonException e) {
+                LOG.atWarn()
+                        .setMessage("frontmatter is not serializable, dropping for {}: {}")
+                        .addArgument(sourcePath)
+                        .addArgument(chunk.heading())
+                        .setCause(e)
+                        .log();
+            }
         }
         if (vector != null) {
             doc.add(new KnnFloatVectorField("embedding", vector, VectorSimilarityFunction.COSINE));
@@ -431,7 +447,8 @@ final class LuceneBackend implements SearchBackend {
                             useSnippet ? capToWindow(snippets[i]) : fullChunkText,
                             top.scoreDocs[i].score,
                             storedLine(docs[i]),
-                            useSnippet));
+                            useSnippet,
+                            frontmatterOf(docs[i])));
         }
         return hits;
     }
@@ -491,6 +508,23 @@ final class LuceneBackend implements SearchBackend {
             return Integer.parseInt(line);
         } catch (NumberFormatException e) {
             return 0;
+        }
+    }
+
+    /** Stored frontmatter, defaulting to empty for chunks/files without any. */
+    private static Map<String, Object> frontmatterOf(Document doc) {
+        var json = doc.get("frontmatter");
+        if (json == null || json.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return SocketProtocol.JSON.readValue(json, new TypeReference<Map<String, Object>>() {});
+        } catch (JacksonException e) {
+            LOG.atWarn()
+                    .setMessage("stored frontmatter is not valid JSON, dropping")
+                    .setCause(e)
+                    .log();
+            return Map.of();
         }
     }
 }

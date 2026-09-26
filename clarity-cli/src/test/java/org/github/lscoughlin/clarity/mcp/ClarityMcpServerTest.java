@@ -25,7 +25,8 @@ class ClarityMcpServerTest {
                     "How to reindex.",
                     1.0f,
                     12,
-                    false);
+                    false,
+                    Map.of());
 
     @Test
     void searchToolReturnsIndexedChunks() {
@@ -52,6 +53,50 @@ class ClarityMcpServerTest {
                 && text.text().contains("doc/guide.md:12")
                 && text.text().contains("[Usage / Indexing]")
                 && text.text().contains("How to reindex."));
+    }
+
+    @Test
+    void frontmatterSurfacesAsStructuredContentAndAnExtraTextBlock() {
+        Hit hitWithFrontmatter =
+                new Hit(
+                        "docs",
+                        "doc/guide.md",
+                        List.of("Usage"),
+                        "How to reindex.",
+                        1.0f,
+                        12,
+                        false,
+                        Map.of("scope", "billing"));
+        McpServerFeatures.SyncToolSpecification spec =
+                ClarityMcpServer.buildSearchTool(
+                        (index, query, topN, syntax, pathPrefix) ->
+                                List.of(hitWithFrontmatter, HIT));
+
+        McpSchema.CallToolResult result =
+                spec.callHandler()
+                        .apply(null, new McpSchema.CallToolRequest(
+                                "search", Map.of("index", "docs", "query", "reindex")));
+
+        assertFalse(result.isError());
+        // One text block per hit, plus one extra for the hit that has frontmatter.
+        assertEquals(3, result.content().size());
+        assertTrue(result.content().get(1) instanceof McpSchema.TextContent text
+                && text.text().equals("frontmatter: {\"scope\":\"billing\"}"));
+        assertTrue(
+                result.content().stream()
+                        .noneMatch(
+                                c ->
+                                        c instanceof McpSchema.TextContent text
+                                                && text.text().startsWith("frontmatter:")
+                                                && !text.text().contains("scope")));
+
+        @SuppressWarnings("unchecked")
+        Map<String, Object> structured = (Map<String, Object>) result.structuredContent();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> structuredHits = (List<Map<String, Object>>) structured.get("hits");
+        assertEquals(2, structuredHits.size());
+        assertEquals(Map.of("scope", "billing"), structuredHits.get(0).get("frontmatter"));
+        assertEquals(Map.of(), structuredHits.get(1).get("frontmatter"));
     }
 
     @Test

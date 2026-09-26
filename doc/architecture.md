@@ -17,8 +17,11 @@ Four Maven modules, one direction of dependence:
   `frontmatter` chunk), `YamlLoader` (whole file, one chunk),
   `CommentExtractor` (comment runs and block comments only —
   code tokens never enter the index). Every `Chunk` carries
-  `sourcePath`, a heading breadcrumb, text, and a 1-based
-  `startLine`.
+  `sourcePath`, a heading breadcrumb, text, a 1-based
+  `startLine`, and the file's parsed frontmatter (empty unless
+  it's a Markdown file with a YAML-mapping frontmatter block) —
+  every chunk from that file carries the same frontmatter, not
+  just the standalone `frontmatter` chunk.
 - `clarity-daemon` — owns indexing and the Lucene indexes: one
   index per named entry, one document per chunk. `FileParser`
   parses files on virtual threads; unchanged files skip by
@@ -41,15 +44,18 @@ One Lucene document per chunk. Stored fields: `path`,
 analyzed-but-unstored `heading_text` (non-empty headings, so
 heading-only terms retrieve),
 `line` (chunk start line, `0` for data predating line
-tracking). With an embedder, each document also carries a
+tracking), and `frontmatter` (the chunk's frontmatter map,
+JSON-encoded; absent when empty — duplicated across every
+chunk of a file rather than looked up by path at query time).
+With an embedder, each document also carries a
 COSINE `KnnFloatVectorField` over heading plus body text.
 Writer commit metadata records `schema_version` (currently
-`2`: 1 added `line`, 2 added `heading_text`) and, when
-embedded, the embedding model id and dimensions. A missing or
-older schema marker forces one full reindex pass so new
-stored fields backfill; a changed embedding model id/dims
-fails fast with a drift error (delete the index directory and
-reindex).
+`3`: 1 added `line`, 2 added `heading_text`, 3 added
+`frontmatter`) and, when embedded, the embedding model id and
+dimensions. A missing or older schema marker forces one full
+reindex pass so new stored fields backfill; a changed
+embedding model id/dims fails fast with a drift error (delete
+the index directory and reindex).
 
 ## Query modes
 
@@ -73,7 +79,9 @@ reindex).
   which degrades instead).
 
 Results carry source path, heading breadcrumb, text, score,
-and start line; CLI/MCP render `path:line`.
+start line, and the source file's frontmatter (empty when
+none); CLI/MCP render `path:line`, and print/surface the
+frontmatter separately from the chunk text when present.
 
 ## Embeddings
 

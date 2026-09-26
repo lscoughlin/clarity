@@ -2,11 +2,17 @@ package org.github.lscoughlin.clarity.parser;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import org.commonmark.node.Heading;
 import org.commonmark.node.Node;
 import org.commonmark.parser.IncludeSourceSpans;
 import org.commonmark.parser.Parser;
 import org.commonmark.renderer.text.TextContentRenderer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.dataformat.yaml.YAMLMapper;
 
 /**
  * Splits a Markdown document into one {@link Chunk} per heading section,
@@ -14,9 +20,14 @@ import org.commonmark.renderer.text.TextContentRenderer;
  * own {@code frontmatter} chunk and is excluded from the body. Text
  * before the first heading becomes a single leading chunk with an empty
  * heading path. A heading with no body still produces a chunk so the
- * section title itself stays searchable.
+ * section title itself stays searchable. When the frontmatter block
+ * parses as a YAML mapping, every chunk from the file — not just the
+ * {@code frontmatter} chunk itself — carries it as structured metadata.
  */
 public final class MarkdownChunker {
+    private static final Logger LOG = LoggerFactory.getLogger(MarkdownChunker.class);
+    private static final YAMLMapper YAML = YAMLMapper.builder().build();
+
     private MarkdownChunker() {}
 
     public static List<Chunk> chunk(String sourcePath, String content) {
@@ -24,9 +35,17 @@ public final class MarkdownChunker {
         var bodyText = content;
         var lineOffset = 0;
         Frontmatter frontmatter = splitFrontmatter(content);
+        Map<String, Object> parsedFrontmatter = Map.of();
         if (frontmatter != null) {
             if (!frontmatter.text().isEmpty()) {
-                chunks.add(new Chunk(sourcePath, List.of("frontmatter"), frontmatter.text(), 1));
+                parsedFrontmatter = parseFrontmatter(sourcePath, frontmatter.text());
+                chunks.add(
+                        new Chunk(
+                                sourcePath,
+                                List.of("frontmatter"),
+                                frontmatter.text(),
+                                1,
+                                parsedFrontmatter));
             }
             bodyText = frontmatter.rest();
             lineOffset = frontmatter.consumedLines();
@@ -43,7 +62,7 @@ public final class MarkdownChunker {
 
         for (Node child = document.getFirstChild(); child != null; child = child.getNext()) {
             if (child instanceof Heading heading) {
-                flush(chunks, sourcePath, stack, body, seenHeading, sectionStart);
+                flush(chunks, sourcePath, stack, body, seenHeading, sectionStart, parsedFrontmatter);
                 body.setLength(0);
                 var title = renderer.render(heading).strip();
                 while (!stack.isEmpty() && stack.getLast().level() >= heading.getLevel()) {
@@ -62,8 +81,26 @@ public final class MarkdownChunker {
                 }
             }
         }
-        flush(chunks, sourcePath, stack, body, seenHeading, sectionStart);
+        flush(chunks, sourcePath, stack, body, seenHeading, sectionStart, parsedFrontmatter);
         return chunks;
+    }
+
+    /**
+     * Parses a frontmatter block as YAML; degrades to an empty map (never
+     * throws) on malformed YAML or a non-mapping root, so unparsable
+     * frontmatter never breaks chunking.
+     */
+    private static Map<String, Object> parseFrontmatter(String sourcePath, String text) {
+        try {
+            return YAML.readValue(text, new TypeReference<Map<String, Object>>() {});
+        } catch (JacksonException e) {
+            LOG.atDebug()
+                    .setMessage("frontmatter is not a YAML mapping, ignoring: {}")
+                    .addArgument(sourcePath)
+                    .setCause(e)
+                    .log();
+            return Map.of();
+        }
     }
 
     /** 1-based line where {@code heading} starts in the original file. */
@@ -81,14 +118,15 @@ public final class MarkdownChunker {
             List<HeadingRef> stack,
             StringBuilder body,
             boolean seenHeading,
-            int startLine) {
+            int startLine,
+            Map<String, Object> frontmatter) {
         // Skip a blank preamble and blank text before the first heading;
         // every heading section is emitted even when its body is empty.
         if (body.length() == 0 && (!seenHeading || stack.isEmpty())) {
             return;
         }
         var headings = stack.stream().map(HeadingRef::title).toList();
-        chunks.add(new Chunk(sourcePath, headings, body.toString(), startLine));
+        chunks.add(new Chunk(sourcePath, headings, body.toString(), startLine, frontmatter));
     }
 
     private record HeadingRef(int level, String title) {}

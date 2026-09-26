@@ -11,10 +11,13 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 import picocli.CommandLine.Model.CommandSpec;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Searches an index via the daemon. */
 @Command(name = "query", description = "Search an index.", mixinStandardHelpOptions = true)
 public class QueryCommand implements Callable<Integer> {
+    private static final JsonMapper JSON = JsonMapper.builder().build();
+
     @Option(
             names = {"-d", "--dir"},
             defaultValue = ".",
@@ -73,8 +76,12 @@ public class QueryCommand implements Callable<Integer> {
             var out = spec.commandLine().getOut();
             for (var hit : hits) {
                 out.printf(
-                        "%s [%s] (%.5f)%n%s%n%n",
+                        "%s [%s] (%.5f)%n%s%n",
                         hit.location(), hit.heading(), hit.score(), hit.text());
+                if (!hit.frontmatter().isEmpty()) {
+                    out.println("frontmatter: " + JSON.writeValueAsString(hit.frontmatter()));
+                }
+                out.println();
             }
             return 0;
         } catch (Exception e) {

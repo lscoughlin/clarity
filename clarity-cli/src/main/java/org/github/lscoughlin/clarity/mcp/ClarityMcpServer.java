@@ -6,6 +6,8 @@ import io.modelcontextprotocol.server.McpServerFeatures;
 import io.modelcontextprotocol.server.transport.StdioServerTransportProvider;
 import io.modelcontextprotocol.spec.McpSchema;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -32,6 +34,7 @@ import tools.jackson.databind.json.JsonMapper;
         description = "Serve the local documentation corpus to MCP clients over stdio.")
 public final class ClarityMcpServer implements Callable<Integer> {
     private static final Logger LOG = LoggerFactory.getLogger(ClarityMcpServer.class);
+    private static final JsonMapper JSON = JsonMapper.builder().build();
 
     @Option(names = "--dir", defaultValue = ".", description = "Project directory to serve.")
     Path dir;
@@ -149,10 +152,27 @@ public final class ClarityMcpServer implements Callable<Integer> {
                             if (hits.isEmpty()) {
                                 result.addTextContent("no matches");
                             }
+                            var structuredHits = new ArrayList<Map<String, Object>>();
                             for (var hit : hits) {
                                 result.addTextContent(
                                         hit.location() + " [" + hit.heading() + "]\n" + hit.text());
+                                // Structured companion to the text block above, not a
+                                // replacement: many MCP clients don't surface
+                                // structuredContent, so frontmatter also gets its own
+                                // always-visible text block here.
+                                if (!hit.frontmatter().isEmpty()) {
+                                    result.addTextContent(
+                                            "frontmatter: " + JSON.writeValueAsString(hit.frontmatter()));
+                                }
+                                var structuredHit = new LinkedHashMap<String, Object>();
+                                structuredHit.put("location", hit.location());
+                                structuredHit.put("heading", hit.heading());
+                                structuredHit.put("score", hit.score());
+                                structuredHit.put("text", hit.text());
+                                structuredHit.put("frontmatter", hit.frontmatter());
+                                structuredHits.add(structuredHit);
                             }
+                            result.structuredContent(Map.of("hits", structuredHits));
                             return result.build();
                         })
                 .build();
@@ -298,9 +318,7 @@ public final class ClarityMcpServer implements Callable<Integer> {
         ListIndexesFunction listIndexes = () -> DaemonClient.listIndexes(target);
         ReindexFunction reindex = (indexOrNull) -> DaemonClient.reindexWithStats(target, indexOrNull);
         HealthFunction health = () -> DaemonClient.health(target);
-        var transport =
-                new StdioServerTransportProvider(
-                        new JacksonMcpJsonMapper(JsonMapper.builder().build()));
+        var transport = new StdioServerTransportProvider(new JacksonMcpJsonMapper(JSON));
         McpServer.sync(transport)
                 .serverInfo("clarity", "1.0-SNAPSHOT")
                 .tools(

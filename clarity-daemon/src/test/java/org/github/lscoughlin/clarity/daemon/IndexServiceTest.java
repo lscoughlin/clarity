@@ -239,8 +239,28 @@ class IndexServiceTest {
                             hits.get(0).text(),
                             hits.get(0).score(),
                             0,
-                            hits.get(0).truncated());
+                            hits.get(0).truncated(),
+                            hits.get(0).frontmatter());
             assertEquals("doc/guide.md", unknown.location());
+        }
+    }
+
+    @Test
+    void frontmatterPropagatesToSiblingHeadingHits(@TempDir Path base) throws IOException {
+        Files.createDirectories(base.resolve(".clarity"));
+        Files.createDirectories(base.resolve("doc"));
+        Files.writeString(
+                base.resolve(".clarity/config.yaml"),
+                "index:\n  docs:\n    index_path: index/docs\n    markdown:\n      - doc/**/*.md\n");
+        Files.writeString(
+                base.resolve("doc/guide.md"),
+                "---\nscope: billing\n---\n# Usage\nHow to reindex the corpus.\n");
+        try (IndexService service = IndexService.open(base)) {
+            service.reindex();
+            List<Hit> hits = service.search("docs", "reindex", 10);
+            assertEquals(1, hits.size());
+            assertEquals(List.of("Usage"), hits.get(0).headingPath());
+            assertEquals(Map.of("scope", "billing"), hits.get(0).frontmatter());
         }
     }
 

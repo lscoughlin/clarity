@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.SearchResponse;
 import org.junit.jupiter.api.Test;
@@ -57,7 +58,9 @@ class AutoStartTest {
                     InputStream in = Channels.newInputStream(conn);
                     OutputStream out = Channels.newOutputStream(conn)) {
                 SocketFrames.read(in);
-                Hit hit = new Hit("docs", "doc/guide.md", List.of("Guide"), "hi", 1.0f, 7, false);
+                Hit hit =
+                        new Hit(
+                                "docs", "doc/guide.md", List.of("Guide"), "hi", 1.0f, 7, false, Map.of());
                 SocketFrames.write(
                         out, SocketProtocol.JSON.writeValueAsBytes(SearchResponse.ok(List.of(hit))));
             } catch (Exception e) {

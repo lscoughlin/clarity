@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class MarkdownChunkerTest {
@@ -86,6 +87,43 @@ class MarkdownChunkerTest {
         assertEquals("title: Guide\ntags: [a]", chunks.get(0).text());
         assertEquals(List.of("Usage"), chunks.get(1).headingPath());
         assertEquals("How to use.", chunks.get(1).text());
+    }
+
+    @Test
+    void frontmatterIsParsedAndPropagatedToEverySiblingChunk() {
+        String doc =
+                "---\nscope: billing\nrelated_docs:\n---\n"
+                        + "Intro.\n\n"
+                        + "# Usage\nHow to use.\n";
+
+        List<Chunk> chunks = MarkdownChunker.chunk("doc/guide.md", doc);
+
+        assertEquals(3, chunks.size());
+        Map<String, Object> expected = new java.util.LinkedHashMap<>();
+        expected.put("scope", "billing");
+        expected.put("related_docs", null);
+        for (Chunk chunk : chunks) {
+            assertEquals(expected, chunk.frontmatter());
+        }
+    }
+
+    @Test
+    void malformedFrontmatterDegradesToEmptyMap() {
+        String doc = "---\n- just\n- a\n- list\n---\n# Usage\nHow to use.\n";
+
+        List<Chunk> chunks = MarkdownChunker.chunk("s.md", doc);
+
+        assertEquals(2, chunks.size());
+        assertTrue(chunks.stream().allMatch(c -> c.frontmatter().isEmpty()));
+    }
+
+    @Test
+    void noFrontmatterYieldsEmptyMap() {
+        String doc = "# Usage\nHow to use.\n";
+
+        List<Chunk> chunks = MarkdownChunker.chunk("s.md", doc);
+
+        assertTrue(chunks.get(0).frontmatter().isEmpty());
     }
 
     @Test
