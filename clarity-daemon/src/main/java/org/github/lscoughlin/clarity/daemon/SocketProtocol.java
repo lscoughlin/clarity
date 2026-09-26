@@ -21,9 +21,13 @@ final class SocketProtocol {
 
     private SocketProtocol() {}
 
-    record SearchRequest(String op, String index, String query, int topN, String syntax) {
+    record SearchRequest(String op, String index, String query, int topN, String syntax, boolean fullText) {
         SearchRequest(String index, String query, int topN, String syntax) {
-            this("search", index, query, topN, syntax);
+            this(index, query, topN, syntax, false);
+        }
+
+        SearchRequest(String index, String query, int topN, String syntax, boolean fullText) {
+            this("search", index, query, topN, syntax, fullText);
         }
     }
 

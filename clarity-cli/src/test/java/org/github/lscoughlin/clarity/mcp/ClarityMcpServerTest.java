@@ -21,16 +21,28 @@ class ClarityMcpServerTest {
                     List.of("Usage", "Indexing"),
                     "How to reindex.",
                     1.0f,
-                    12);
+                    12,
+                    false);
+
+    private static final Hit TRUNCATED_HIT =
+            new Hit(
+                    "docs",
+                    "doc/architecture.md",
+                    List.of("Design"),
+                    "**reindex** happens in the background ...",
+                    1.0f,
+                    40,
+                    true);
 
     @Test
     void searchToolReturnsIndexedChunks() {
         McpServerFeatures.SyncToolSpecification spec =
-                ClarityMcpServer.buildSearchTool((index, query, topN, syntax) -> {
+                ClarityMcpServer.buildSearchTool((index, query, topN, syntax, fullText) -> {
                     assertEquals("docs", index);
                     assertEquals("reindex", query);
                     assertEquals(SearchBackend.DEFAULT_TOP_N, topN);
                     assertEquals(SearchBackend.Syntax.TEXT, syntax);
+                    assertFalse(fullText);
                     return List.of(HIT);
                 });
 
@@ -52,7 +64,7 @@ class ClarityMcpServerTest {
     @Test
     void rawSyntaxPassesThrough() {
         McpServerFeatures.SyncToolSpecification spec =
-                ClarityMcpServer.buildSearchTool((index, query, topN, syntax) -> {
+                ClarityMcpServer.buildSearchTool((index, query, topN, syntax, fullText) -> {
                     assertEquals(SearchBackend.Syntax.RAW, syntax);
                     return List.of();
                 });
@@ -72,9 +84,43 @@ class ClarityMcpServerTest {
     }
 
     @Test
+    void fullTextArgumentPassesThrough() {
+        McpServerFeatures.SyncToolSpecification spec =
+                ClarityMcpServer.buildSearchTool((index, query, topN, syntax, fullText) -> {
+                    assertTrue(fullText);
+                    return List.of();
+                });
+
+        McpSchema.CallToolResult result =
+                spec.callHandler()
+                        .apply(
+                                null,
+                                new McpSchema.CallToolRequest(
+                                        "search",
+                                        Map.of("index", "docs", "query", "reindex", "full_text", true)));
+
+        assertFalse(result.isError());
+    }
+
+    @Test
+    void truncatedHitNotesFullTextIsAvailable() {
+        McpServerFeatures.SyncToolSpecification spec =
+                ClarityMcpServer.buildSearchTool((index, query, topN, syntax, fullText) -> List.of(TRUNCATED_HIT));
+
+        McpSchema.CallToolResult result =
+                spec.callHandler()
+                        .apply(null, new McpSchema.CallToolRequest(
+                                "search", Map.of("index", "docs", "query", "reindex")));
+
+        assertFalse(result.isError());
+        assertTrue(result.content().get(0) instanceof McpSchema.TextContent text
+                && text.text().contains("full_text:true"));
+    }
+
+    @Test
     void searchToolReportsMissingArguments() {
         McpServerFeatures.SyncToolSpecification spec =
-                ClarityMcpServer.buildSearchTool((index, query, topN, syntax) -> List.of());
+                ClarityMcpServer.buildSearchTool((index, query, topN, syntax, fullText) -> List.of());
 
         McpSchema.CallToolResult result =
                 spec.callHandler().apply(null, new McpSchema.CallToolRequest("search", Map.of()));
@@ -85,7 +131,7 @@ class ClarityMcpServerTest {
     @Test
     void searchToolReportsNoMatches() {
         McpServerFeatures.SyncToolSpecification spec =
-                ClarityMcpServer.buildSearchTool((index, query, topN, syntax) -> List.of());
+                ClarityMcpServer.buildSearchTool((index, query, topN, syntax, fullText) -> List.of());
 
         McpSchema.CallToolResult result =
                 spec.callHandler()

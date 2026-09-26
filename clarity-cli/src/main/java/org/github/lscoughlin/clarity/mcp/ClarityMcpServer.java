@@ -40,7 +40,8 @@ public final class ClarityMcpServer implements Callable<Integer> {
 
     /** Query seam, so the tool wiring is testable without a transport. */
     public interface SearchFunction {
-        List<Hit> search(String indexName, String query, int topN, SearchBackend.Syntax syntax)
+        List<Hit> search(
+                String indexName, String query, int topN, SearchBackend.Syntax syntax, boolean fullText)
                 throws Exception;
     }
 
@@ -72,7 +73,12 @@ public final class ClarityMcpServer implements Callable<Integer> {
                                                         Map.of(
                                                                 "type", "string",
                                                                 "description",
-                                                                "Query interpretation: text (plain words, default), raw (Lucene syntax), or vector (semantic search).")),
+                                                                "Query interpretation: text (plain words, default), raw (Lucene syntax), or vector (semantic search)."),
+                                                        "full_text",
+                                                        Map.of(
+                                                                "type", "boolean",
+                                                                "description",
+                                                                "Return each hit's full chunk instead of a snippet (default false).")),
                                         "required", List.of("index", "query")))
                         .build();
         return McpServerFeatures.SyncToolSpecification.builder()
@@ -99,9 +105,12 @@ public final class ClarityMcpServer implements Callable<Integer> {
                                             : "vector".equals(args.get("syntax"))
                                                     ? SearchBackend.Syntax.VECTOR
                                                     : SearchBackend.Syntax.TEXT;
+                            boolean fullText = Boolean.TRUE.equals(args.get("full_text"));
                             List<Hit> hits;
                             try {
-                                hits = search.search((String) index, (String) query, limit, syntax);
+                                hits =
+                                        search.search(
+                                                (String) index, (String) query, limit, syntax, fullText);
                             } catch (Exception e) {
                                 LOG.atWarn().setMessage("search failed").setCause(e).log();
                                 return McpSchema.CallToolResult.builder()
@@ -116,7 +125,14 @@ public final class ClarityMcpServer implements Callable<Integer> {
                             }
                             for (var hit : hits) {
                                 result.addTextContent(
-                                        hit.location() + " [" + hit.heading() + "]\n" + hit.text());
+                                        hit.location()
+                                                + " ["
+                                                + hit.heading()
+                                                + "]\n"
+                                                + hit.text()
+                                                + (hit.truncated()
+                                                        ? "\n[snippet — pass full_text:true for the complete section]"
+                                                        : ""));
                             }
                             return result.build();
                         })
@@ -128,8 +144,8 @@ public final class ClarityMcpServer implements Callable<Integer> {
         DaemonClient.Target target =
                 DaemonClient.target(dir.toAbsolutePath().normalize(), socketOverride);
         SearchFunction search =
-                (index, query, topN, syntax) ->
-                        DaemonClient.search(target, index, query, topN, syntax);
+                (index, query, topN, syntax, fullText) ->
+                        DaemonClient.search(target, index, query, topN, syntax, fullText);
         var transport =
                 new StdioServerTransportProvider(
                         new JacksonMcpJsonMapper(JsonMapper.builder().build()));

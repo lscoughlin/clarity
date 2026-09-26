@@ -158,7 +158,8 @@ class IndexServiceTest {
                             hits.get(0).headingPath(),
                             hits.get(0).text(),
                             hits.get(0).score(),
-                            0);
+                            0,
+                            hits.get(0).truncated());
             assertEquals("doc/guide.md", unknown.location());
         }
     }

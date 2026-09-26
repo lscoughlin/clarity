@@ -128,11 +128,34 @@ public final class DaemonClient {
             int topN,
             SearchBackend.Syntax syntax)
             throws IOException {
+        return search(target, spawner, index, query, topN, syntax, false);
+    }
+
+    public static List<Hit> search(
+            Target target,
+            String index,
+            String query,
+            int topN,
+            SearchBackend.Syntax syntax,
+            boolean fullText)
+            throws IOException {
+        return search(target, defaultSpawner(), index, query, topN, syntax, fullText);
+    }
+
+    public static List<Hit> search(
+            Target target,
+            Spawner spawner,
+            String index,
+            String query,
+            int topN,
+            SearchBackend.Syntax syntax,
+            boolean fullText)
+            throws IOException {
         ensureRunning(target, spawner);
         SearchResponse response =
                 roundTrip(
                         target,
-                        new SearchRequest(index, query, topN, syntax.name().toLowerCase()),
+                        new SearchRequest(index, query, topN, syntax.name().toLowerCase(), fullText),
                         SearchResponse.class);
         if (!response.ok()) {
             throw new IOException("daemon error: " + response.error());

@@ -92,11 +92,17 @@ public final class IndexService implements Closeable {
 
     public List<Hit> search(String indexName, String query, int topN, SearchBackend.Syntax syntax)
             throws IOException {
+        return search(indexName, query, topN, syntax, false);
+    }
+
+    public List<Hit> search(
+            String indexName, String query, int topN, SearchBackend.Syntax syntax, boolean fullText)
+            throws IOException {
         SearchBackend backend = backends.get(indexName);
         if (backend == null) {
             throw new IllegalArgumentException("unknown index: " + indexName);
         }
-        return backend.search(query, topN, syntax);
+        return backend.search(query, topN, syntax, fullText);
     }
 
     /** Document count per named index, for logging and tests. */

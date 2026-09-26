@@ -49,6 +49,11 @@ public class QueryCommand implements Callable<Integer> {
                             + " or vector (semantic search, needs an embedded index).")
     String syntax = "text";
 
+    @Option(
+            names = {"--full-text"},
+            description = "Return each hit's full chunk instead of a snippet.")
+    boolean fullText;
+
     @Override
     public Integer call() {
         SearchBackend.Syntax mode =
@@ -62,12 +67,17 @@ public class QueryCommand implements Callable<Integer> {
                     DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket);
             DaemonClient.ensureRunning(target);
             List<Hit> hits =
-                    DaemonClient.search(target, indexName, String.join(" ", terms), topN, mode);
+                    DaemonClient.search(
+                            target, indexName, String.join(" ", terms), topN, mode, fullText);
             var out = spec.commandLine().getOut();
             for (var hit : hits) {
                 out.printf(
-                        "%s [%s] (%.3f)%n%s%n%n",
-                        hit.location(), hit.heading(), hit.score(), hit.text());
+                        "%s [%s] (%.3f)%s%n%s%n%n",
+                        hit.location(),
+                        hit.heading(),
+                        hit.score(),
+                        hit.truncated() ? " [snippet — pass --full-text for the full section]" : "",
+                        hit.text());
             }
             return 0;
         } catch (Exception e) {

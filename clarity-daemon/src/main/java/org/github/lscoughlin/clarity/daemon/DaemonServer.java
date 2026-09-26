@@ -126,7 +126,12 @@ public final class DaemonServer implements Closeable {
                                             ? SearchBackend.Syntax.VECTOR
                                             : SearchBackend.Syntax.TEXT;
                     List<Hit> hits =
-                            daemon.search(search.index(), search.query(), search.topN(), syntax);
+                            daemon.search(
+                                    search.index(),
+                                    search.query(),
+                                    search.topN(),
+                                    syntax,
+                                    search.fullText());
                     yield encode(SearchResponse.ok(hits));
                 }
                 case "reindex" -> {

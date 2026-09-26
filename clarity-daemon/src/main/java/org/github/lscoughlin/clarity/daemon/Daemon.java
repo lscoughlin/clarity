@@ -81,9 +81,15 @@ public final class Daemon implements Closeable {
     public synchronized List<Hit> search(
             String indexName, String query, int topN, SearchBackend.Syntax syntax)
             throws IOException {
+        return search(indexName, query, topN, syntax, false);
+    }
+
+    public synchronized List<Hit> search(
+            String indexName, String query, int topN, SearchBackend.Syntax syntax, boolean fullText)
+            throws IOException {
         inFlight++;
         try {
-            var hits = service.search(indexName, query, topN, syntax);
+            var hits = service.search(indexName, query, topN, syntax, fullText);
             touch();
             return hits;
         } finally {

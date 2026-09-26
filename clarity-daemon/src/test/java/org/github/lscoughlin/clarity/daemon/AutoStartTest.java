@@ -57,7 +57,7 @@ class AutoStartTest {
                     InputStream in = Channels.newInputStream(conn);
                     OutputStream out = Channels.newOutputStream(conn)) {
                 SocketFrames.read(in);
-                Hit hit = new Hit("docs", "doc/guide.md", List.of("Guide"), "hi", 1.0f, 7);
+                Hit hit = new Hit("docs", "doc/guide.md", List.of("Guide"), "hi", 1.0f, 7, false);
                 SocketFrames.write(
                         out, SocketProtocol.JSON.writeValueAsBytes(SearchResponse.ok(List.of(hit))));
             } catch (Exception e) {

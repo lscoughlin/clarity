@@ -57,6 +57,16 @@ public interface SearchBackend extends Closeable {
     }
 
     /**
+     * Top-{@code topN} matches as above; {@code fullText} true returns each
+     * hit's complete chunk, false (the default) returns a bounded,
+     * highlighted snippet for chunks above the backend's size threshold.
+     * Backends that don't implement snippeting simply ignore it.
+     */
+    default List<Hit> search(String query, int topN, Syntax syntax, boolean fullText) throws IOException {
+        return search(query, topN, syntax);
+    }
+
+    /**
      * True when this index's stored vectors (if any) were written by a
      * different embedding model than {@code embedder}, or predate
      * vectors entirely — the caller should re-embed everything (pass

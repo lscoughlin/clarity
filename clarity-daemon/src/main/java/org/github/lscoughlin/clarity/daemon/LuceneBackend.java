@@ -30,6 +30,8 @@ import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.Query;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.uhighlight.DefaultPassageFormatter;
+import org.apache.lucene.search.uhighlight.UnifiedHighlighter;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.store.FSDirectory;
 import org.github.lscoughlin.clarity.parser.Chunk;
@@ -58,6 +60,28 @@ final class LuceneBackend implements SearchBackend {
 
     /** Heading matches rank above equal body matches in TEXT mode. */
     private static final float HEADING_BOOST = 2.0f;
+
+    /** Bounded highlight window per hit, in chars — "a couple hundred" per the sketch this implements. */
+    private static final int SNIPPET_WINDOW_CHARS = 300;
+
+    /**
+     * Chunks at or below this length return in full even without
+     * {@code full_text: true} — snippeting only pays off once the saved
+     * context is a multiple of the window. Tuned against a reference corpus:
+     * most chunks are well under this, so most hits never invoke the
+     * highlighter at all.
+     */
+    private static final int SNIPPET_THRESHOLD_CHARS = SNIPPET_WINDOW_CHARS * 3;
+
+    /**
+     * Highlight sentinels from the Unicode private-use area, swapped for
+     * markdown bold ({@code **}) only in the final windowed snippet.
+     * Chunk text is markdown, so real {@code **bold**} source text must not
+     * be mistaken for a query-term highlight while detecting or centering.
+     */
+    private static final String HIGHLIGHT_START = "";
+
+    private static final String HIGHLIGHT_END = "";
 
     /** Max embedding rows per inference run; bounds session memory on huge files. */
     static final int EMBED_BATCH_ROWS = 64;
@@ -228,6 +252,12 @@ final class LuceneBackend implements SearchBackend {
 
     @Override
     public List<Hit> search(String query, int topN, SearchBackend.Syntax syntax) throws IOException {
+        return search(query, topN, syntax, false);
+    }
+
+    @Override
+    public List<Hit> search(String query, int topN, SearchBackend.Syntax syntax, boolean fullText)
+            throws IOException {
         if (syntax == SearchBackend.Syntax.VECTOR) {
             return searchVector(query, topN);
         }
@@ -245,7 +275,7 @@ final class LuceneBackend implements SearchBackend {
         } catch (ParseException e) {
             throw new IllegalArgumentException("invalid query: " + query, e);
         }
-        return runQuery(parsed, topN);
+        return runQuery(parsed, topN, fullText);
     }
 
     /**
@@ -257,28 +287,90 @@ final class LuceneBackend implements SearchBackend {
         if (embedder == null) {
             throw new IOException("vector search unavailable: index '" + indexName + "' has no embedder");
         }
-        return runQuery(
-                new KnnFloatVectorQuery("embedding", embedder.embed(query), topN), topN);
+        // Vector hits have no term match to highlight around: always full text.
+        return runQuery(new KnnFloatVectorQuery("embedding", embedder.embed(query), topN), topN, true);
     }
 
-    private List<Hit> runQuery(Query parsed, int topN) throws IOException {
+    private List<Hit> runQuery(Query parsed, int topN, boolean fullText) throws IOException {
         var hits = new ArrayList<Hit>();
         try (DirectoryReader reader = DirectoryReader.open(writer)) {
             var searcher = new IndexSearcher(reader);
             var top = searcher.search(parsed, topN);
-            for (ScoreDoc scoreDoc : top.scoreDocs) {
-                var doc = searcher.storedFields().document(scoreDoc.doc);
+            var docs = new Document[top.scoreDocs.length];
+            var texts = new String[top.scoreDocs.length];
+            for (int i = 0; i < top.scoreDocs.length; i++) {
+                docs[i] = searcher.storedFields().document(top.scoreDocs[i].doc);
+                texts[i] = docs[i].get("text");
+            }
+            String[] snippets = null;
+            if (!fullText && needsSnippet(texts)) {
+                // Private-use-area sentinels, not "**": chunk text is markdown, and
+                // real "**bold**" source would otherwise be indistinguishable from
+                // an actual query-term highlight below.
+                var highlighter =
+                        UnifiedHighlighter.builder(searcher, analyzer)
+                                .withFormatter(
+                                        new DefaultPassageFormatter(
+                                                HIGHLIGHT_START, HIGHLIGHT_END, " ... ", false))
+                                .build();
+                snippets = highlighter.highlight("text", parsed, top, 1);
+            }
+            for (int i = 0; i < top.scoreDocs.length; i++) {
+                var fullChunkText = texts[i];
+                // No highlight sentinel means the highlighter found nothing to mark
+                // in "text" (e.g. the query matched only via unstored heading_text)
+                // — an unrelated truncated excerpt helps no one, so fall back to
+                // the full chunk rather than call it a snippet.
+                var useSnippet =
+                        snippets != null
+                                && fullChunkText != null
+                                && fullChunkText.length() > SNIPPET_THRESHOLD_CHARS
+                                && snippets[i] != null
+                                && snippets[i].contains(HIGHLIGHT_START);
                 hits.add(
                         new Hit(
                                 indexName,
-                                doc.get("path"),
-                                splitHeading(doc.get("heading")),
-                                doc.get("text"),
-                                scoreDoc.score,
-                                storedLine(doc)));
+                                docs[i].get("path"),
+                                splitHeading(docs[i].get("heading")),
+                                useSnippet ? capToWindow(snippets[i]) : fullChunkText,
+                                top.scoreDocs[i].score,
+                                storedLine(docs[i]),
+                                useSnippet));
             }
         }
         return hits;
+    }
+
+    private static boolean needsSnippet(String[] texts) {
+        for (var text : texts) {
+            if (text != null && text.length() > SNIPPET_THRESHOLD_CHARS) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Hard char cap independent of the highlighter's own passage sizing —
+     * the bounded-output guarantee lives here. Centers on the first
+     * highlight sentinel so the matched term stays in the window, then
+     * swaps the sentinels for the markdown-bold marker actually returned.
+     */
+    private static String capToWindow(String snippet) {
+        String windowed;
+        if (snippet.length() <= SNIPPET_WINDOW_CHARS) {
+            windowed = snippet;
+        } else {
+            var mark = snippet.indexOf(HIGHLIGHT_START);
+            var center = mark >= 0 ? mark : snippet.length() / 2;
+            var half = SNIPPET_WINDOW_CHARS / 2;
+            var start = Math.max(0, center - half);
+            var end = Math.min(snippet.length(), start + SNIPPET_WINDOW_CHARS);
+            var prefix = start > 0 ? "... " : "";
+            var suffix = end < snippet.length() ? " ..." : "";
+            windowed = prefix + snippet.substring(start, end) + suffix;
+        }
+        return windowed.replace(HIGHLIGHT_START, "**").replace(HIGHLIGHT_END, "**");
     }
 
     @Override
