@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- All runtime logging goes to stderr. Stdout is reserved:
+         MCP JSON-RPC transport and result printing in the
+         clarity-cli `mcp`, `index`, and `query` commands.
+         No stdout appender may be added here. -->
+    <!-- Silence logback's own status chatter: it prints to stdout by
+         default, which would pollute the MCP transport. -->
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener" />
+    <appender name="STDERR" class="ch.qos.logback.core.ConsoleAppender">
+        <target>System.err</target>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+    <logger name="org.github.lscoughlin" level="INFO" />
+    <root level="WARN">
+        <appender-ref ref="STDERR" />
+    </root>
+</configuration>
