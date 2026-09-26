@@ -21,17 +21,31 @@ final class SocketProtocol {
 
     private SocketProtocol() {}
 
-    record SearchRequest(String op, String index, String query, int topN, String syntax, boolean fullText) {
-        SearchRequest(String index, String query, int topN, String syntax) {
-            this(index, query, topN, syntax, false);
+    record SearchRequest(
+            String op,
+            String index,
+            String query,
+            int topN,
+            String syntax,
+            String pathPrefix,
+            boolean fullText) {
+        SearchRequest(String index, String query, int topN, String syntax, String pathPrefix) {
+            this(index, query, topN, syntax, pathPrefix, false);
         }
 
-        SearchRequest(String index, String query, int topN, String syntax, boolean fullText) {
-            this("search", index, query, topN, syntax, fullText);
+        SearchRequest(
+                String index, String query, int topN, String syntax, String pathPrefix, boolean fullText) {
+            this("search", index, query, topN, syntax, pathPrefix, fullText);
         }
     }
 
     record ControlRequest(String op) {}
+
+    record ReindexRequest(String op, String index) {
+        ReindexRequest(String index) {
+            this("reindex", index);
+        }
+    }
 
     record SearchResponse(boolean ok, List<Hit> hits, String error) {
         static SearchResponse ok(List<Hit> hits) {
@@ -43,13 +57,24 @@ final class SocketProtocol {
         }
     }
 
-    record StatusResponse(boolean ok, Map<String, Integer> counts, String error) {
+    record StatusResponse(
+            boolean ok, Map<String, Integer> counts, Map<String, ReindexStats> stats, String error) {
+        /** Missing fields deserialize to null (unknown-fields tolerance doesn't cover this). */
+        StatusResponse {
+            counts = counts == null ? Map.of() : counts;
+            stats = stats == null ? Map.of() : stats;
+        }
+
         static StatusResponse ok(Map<String, Integer> counts) {
-            return new StatusResponse(true, counts, null);
+            return new StatusResponse(true, counts, Map.of(), null);
+        }
+
+        static StatusResponse ok(Map<String, Integer> counts, Map<String, ReindexStats> stats) {
+            return new StatusResponse(true, counts, stats, null);
         }
 
         static StatusResponse error(String message) {
-            return new StatusResponse(false, Map.of(), message);
+            return new StatusResponse(false, Map.of(), Map.of(), message);
         }
     }
 

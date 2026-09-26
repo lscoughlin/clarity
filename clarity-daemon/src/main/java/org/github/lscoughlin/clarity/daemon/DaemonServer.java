@@ -17,7 +17,7 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Map;
-import org.github.lscoughlin.clarity.daemon.SocketProtocol.ControlRequest;
+import org.github.lscoughlin.clarity.daemon.SocketProtocol.ReindexRequest;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.SearchRequest;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.SearchResponse;
 import org.github.lscoughlin.clarity.daemon.SocketProtocol.StatusResponse;
@@ -119,27 +119,24 @@ public final class DaemonServer implements Closeable {
                 case "search" -> {
                     SearchRequest search =
                             SocketProtocol.JSON.treeToValue(node, SearchRequest.class);
-                    SearchBackend.Syntax syntax =
-                            "raw".equalsIgnoreCase(search.syntax())
-                                    ? SearchBackend.Syntax.RAW
-                                    : "vector".equalsIgnoreCase(search.syntax())
-                                            ? SearchBackend.Syntax.VECTOR
-                                            : SearchBackend.Syntax.TEXT;
+                    SearchBackend.Syntax syntax = SearchBackend.Syntax.parse(search.syntax());
                     List<Hit> hits =
                             daemon.search(
                                     search.index(),
                                     search.query(),
                                     search.topN(),
                                     syntax,
+                                    search.pathPrefix(),
                                     search.fullText());
                     yield encode(SearchResponse.ok(hits));
                 }
                 case "reindex" -> {
-                    daemon.requestReindex();
-                    daemon.drainReindex();
-                    yield encode(StatusResponse.ok(daemon.counts()));
+                    ReindexRequest reindex =
+                            SocketProtocol.JSON.treeToValue(node, ReindexRequest.class);
+                    Map<String, ReindexStats> stats = daemon.reindexNow(reindex.index());
+                    yield encode(StatusResponse.ok(daemon.counts(), stats));
                 }
-                case "health" -> encode(StatusResponse.ok(Map.of()));
+                case "health" -> encode(StatusResponse.ok(daemon.counts()));
                 default -> encode(SearchResponse.error("unknown op"));
             };
         } catch (Exception e) {

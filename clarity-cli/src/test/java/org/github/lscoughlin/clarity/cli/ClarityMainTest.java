@@ -69,7 +69,12 @@ class ClarityMainTest {
                             "--dir",
                             base.toString(),
                             "--socket",
-                            daemon.socket().toString()));
+                            daemon.socket().toString(),
+                            "--lock",
+                            daemon.socket()
+                                    .getParent()
+                                    .resolve("roundtrip-daemon.lock")
+                                    .toString()));
             assertTrue(out.toString().contains("docs=1"), out.toString());
 
             out.getBuffer().setLength(0);
@@ -120,6 +125,56 @@ class ClarityMainTest {
                             "docs",
                             "\"Use apt\""));
             assertTrue(out.toString().contains("doc/guide.md:4 [Setup / Linux]"), out.toString());
+        }
+    }
+
+    @Test
+    void pathPrefixFlagScopesResults(@TempDir Path base) throws Exception {
+        Files.createDirectories(base.resolve(".clarity"));
+        Files.createDirectories(base.resolve("doc/deploy"));
+        Files.createDirectories(base.resolve("doc/control"));
+        Files.writeString(
+                base.resolve(".clarity/config.yaml"),
+                """
+                index:
+                  docs:
+                    index_path: index/docs
+                    markdown:
+                      - doc/**/*.md
+                """);
+        Files.writeString(
+                base.resolve("doc/deploy/setup.md"), "# Setup\nDeploy the widget here.\n");
+        Files.writeString(
+                base.resolve("doc/control/setup.md"), "# Setup\nControl the widget here.\n");
+        try (RunningDaemon daemon = RunningDaemon.start(base, "pathprefix")) {
+            CommandLine index = new CommandLine(new ClarityMain());
+            index.setOut(new PrintWriter(new StringWriter()));
+            assertEquals(
+                    0,
+                    index.execute(
+                            "index",
+                            "--dir",
+                            base.toString(),
+                            "--socket",
+                            daemon.socket().toString()));
+
+            StringWriter out = new StringWriter();
+            CommandLine query = new CommandLine(new ClarityMain());
+            query.setOut(new PrintWriter(out));
+            assertEquals(
+                    0,
+                    query.execute(
+                            "query",
+                            "--dir",
+                            base.toString(),
+                            "--socket",
+                            daemon.socket().toString(),
+                            "--path-prefix",
+                            "doc/deploy",
+                            "docs",
+                            "widget"));
+            assertTrue(out.toString().contains("doc/deploy/setup.md"), out.toString());
+            assertTrue(!out.toString().contains("doc/control/setup.md"), out.toString());
         }
     }
 

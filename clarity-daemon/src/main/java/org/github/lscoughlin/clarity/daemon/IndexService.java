@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -80,10 +81,21 @@ public final class IndexService implements Closeable {
     }
 
     /** Reindexes every named entry; safe to call repeatedly. */
-    public void reindex() throws IOException {
+    public Map<String, ReindexStats> reindex() throws IOException {
+        var stats = new LinkedHashMap<String, ReindexStats>();
         for (Map.Entry<String, ClarityConfig.IndexConfig> entry : config.index().entrySet()) {
-            reindexOne(entry.getKey(), entry.getValue());
+            stats.put(entry.getKey(), reindexOne(entry.getKey(), entry.getValue()));
         }
+        return stats;
+    }
+
+    /** Reindexes one named entry; throws if the name is not configured. */
+    public ReindexStats reindexIndex(String name) throws IOException {
+        ClarityConfig.IndexConfig index = config.index().get(name);
+        if (index == null) {
+            throw new IllegalArgumentException("unknown index: " + name);
+        }
+        return reindexOne(name, index);
     }
 
     public List<Hit> search(String indexName, String query, int topN) throws IOException {
@@ -92,17 +104,28 @@ public final class IndexService implements Closeable {
 
     public List<Hit> search(String indexName, String query, int topN, SearchBackend.Syntax syntax)
             throws IOException {
-        return search(indexName, query, topN, syntax, false);
+        return search(indexName, query, topN, syntax, null);
     }
 
     public List<Hit> search(
-            String indexName, String query, int topN, SearchBackend.Syntax syntax, boolean fullText)
+            String indexName, String query, int topN, SearchBackend.Syntax syntax, String pathPrefix)
+            throws IOException {
+        return search(indexName, query, topN, syntax, pathPrefix, false);
+    }
+
+    public List<Hit> search(
+            String indexName,
+            String query,
+            int topN,
+            SearchBackend.Syntax syntax,
+            String pathPrefix,
+            boolean fullText)
             throws IOException {
         SearchBackend backend = backends.get(indexName);
         if (backend == null) {
             throw new IllegalArgumentException("unknown index: " + indexName);
         }
-        return backend.search(query, topN, syntax, fullText);
+        return backend.search(query, topN, syntax, pathPrefix, fullText);
     }
 
     /** Document count per named index, for logging and tests. */
@@ -132,18 +155,19 @@ public final class IndexService implements Closeable {
         closeAll(backends);
     }
 
-    private void reindexOne(String name, ClarityConfig.IndexConfig index) throws IOException {
+    private ReindexStats reindexOne(String name, ClarityConfig.IndexConfig index)
+            throws IOException {
         SearchBackend backend = backends.get(name);
         // Pre-vector indexes skip nothing: every file needs embedding.
         // Pre-schema indexes likewise rewrite fully so new stored fields backfill.
-        Map<String, String> known =
-                backend.embeddingStale(embedder) || backend.schemaStale()
-                        ? Map.of()
-                        : backend.knownChecksums();
+        boolean fullRewrite = backend.embeddingStale(embedder) || backend.schemaStale();
+        Map<String, String> known = backend.knownChecksums();
         var jobs = collectJobs(index);
-        var parsed = FileParser.parseAll(jobs, known);
+        var parsed = FileParser.parseAll(jobs, fullRewrite ? Map.of() : known);
 
         var seen = new HashSet<String>();
+        var added = 0;
+        var changed = 0;
         var skipped = 0;
         for (FileParser.ParsedFile file : parsed) {
             seen.add(file.relativePath());
@@ -152,6 +176,11 @@ public final class IndexService implements Closeable {
                 continue;
             }
             backend.updateDocuments(file.relativePath(), file.checksum(), file.chunks());
+            if (known.containsKey(file.relativePath())) {
+                changed++;
+            } else {
+                added++;
+            }
         }
 
         var removed = 0;
@@ -168,6 +197,7 @@ public final class IndexService implements Closeable {
                 .addArgument(skipped)
                 .addArgument(removed)
                 .log();
+        return new ReindexStats(added, changed, removed, backend.count());
     }
 
     private List<FileParser.FileJob> collectJobs(ClarityConfig.IndexConfig index) {

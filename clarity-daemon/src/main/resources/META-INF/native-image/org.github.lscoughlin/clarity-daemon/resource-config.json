@@ -1,0 +1,12 @@
+{
+  "resources": {
+    "includes": [
+      {
+        "pattern": "\\Qai/onnxruntime/native/osx-aarch64/\\E.*"
+      },
+      {
+        "pattern": "\\Qlogback.xml\\E"
+      }
+    ]
+  }
+}

@@ -11,10 +11,13 @@ import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Spec;
 import picocli.CommandLine.Model.CommandSpec;
+import tools.jackson.databind.json.JsonMapper;
 
 /** Searches an index via the daemon. */
 @Command(name = "query", description = "Search an index.", mixinStandardHelpOptions = true)
 public class QueryCommand implements Callable<Integer> {
+    private static final JsonMapper JSON = JsonMapper.builder().build();
+
     @Option(
             names = {"-d", "--dir"},
             defaultValue = ".",
@@ -25,6 +28,11 @@ public class QueryCommand implements Callable<Integer> {
             names = {"--socket"},
             description = "Daemon socket path (default: <dir>/.clarity/clarity.sock).")
     Path socket;
+
+    @Option(
+            names = {"--lock"},
+            description = "Daemon lock file path (default: <dir>/.clarity/daemon.lock).")
+    Path lock;
 
     @Spec
     CommandSpec spec;
@@ -43,11 +51,17 @@ public class QueryCommand implements Callable<Integer> {
 
     @Option(
             names = {"--query-syntax"},
-            defaultValue = "text",
+            defaultValue = "hybrid",
             description =
-                    "Query interpretation: text (plain words), raw (Lucene syntax),"
-                            + " or vector (semantic search, needs an embedded index).")
-    String syntax = "text";
+                    "Query interpretation: hybrid (default; fuses text and vector ranking,"
+                            + " degrading to text-only without an embedded index), text (plain words),"
+                            + " raw (Lucene syntax), or vector (semantic search, needs an embedded index).")
+    String syntax = "hybrid";
+
+    @Option(
+            names = {"--path-prefix"},
+            description = "Restrict results to this path or its subtree, e.g. doc/deploy.")
+    String pathPrefix;
 
     @Option(
             names = {"--full-text"},
@@ -56,28 +70,27 @@ public class QueryCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        SearchBackend.Syntax mode =
-                "raw".equalsIgnoreCase(syntax)
-                        ? SearchBackend.Syntax.RAW
-                        : "vector".equalsIgnoreCase(syntax)
-                                ? SearchBackend.Syntax.VECTOR
-                                : SearchBackend.Syntax.TEXT;
+        SearchBackend.Syntax mode = SearchBackend.Syntax.parse(syntax);
         try {
             DaemonClient.Target target =
-                    DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket);
+                    DaemonClient.target(baseDir.toAbsolutePath().normalize(), socket, lock);
             DaemonClient.ensureRunning(target);
             List<Hit> hits =
                     DaemonClient.search(
-                            target, indexName, String.join(" ", terms), topN, mode, fullText);
+                            target, indexName, String.join(" ", terms), topN, mode, pathPrefix, fullText);
             var out = spec.commandLine().getOut();
             for (var hit : hits) {
                 out.printf(
-                        "%s [%s] (%.3f)%s%n%s%n%n",
+                        "%s [%s] (%.5f)%s%n%s%n",
                         hit.location(),
                         hit.heading(),
                         hit.score(),
                         hit.truncated() ? " [snippet — pass --full-text for the full section]" : "",
                         hit.text());
+                if (!hit.frontmatter().isEmpty()) {
+                    out.println("frontmatter: " + JSON.writeValueAsString(hit.frontmatter()));
+                }
+                out.println();
             }
             return 0;
         } catch (Exception e) {
