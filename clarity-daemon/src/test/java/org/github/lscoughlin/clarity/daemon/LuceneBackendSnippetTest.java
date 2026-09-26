@@ -65,7 +65,10 @@ class LuceneBackendSnippetTest {
         writeCorpus(base, longSection("kumquat"));
         try (IndexService service = IndexService.open(base)) {
             service.reindex();
-            Hit full = find(service.search("docs", "kumquat", 10, SearchBackend.Syntax.TEXT, true), "doc/long.md");
+            Hit full =
+                    find(
+                            service.search("docs", "kumquat", 10, SearchBackend.Syntax.TEXT, null, true),
+                            "doc/long.md");
             assertFalse(full.truncated());
             assertTrue(full.text().length() > 1000, "fixture should exceed the snippet threshold");
 
@@ -104,7 +107,10 @@ class LuceneBackendSnippetTest {
         writeCorpus(base, longSection("kumquat"));
         try (IndexService service = IndexService.open(base)) {
             service.reindex();
-            Hit hit = find(service.search("docs", "kumquat", 10, SearchBackend.Syntax.TEXT, true), "doc/long.md");
+            Hit hit =
+                    find(
+                            service.search("docs", "kumquat", 10, SearchBackend.Syntax.TEXT, null, true),
+                            "doc/long.md");
             assertFalse(hit.truncated());
             assertTrue(hit.text().contains("kumquat"));
             assertTrue(hit.text().length() > 1000);
