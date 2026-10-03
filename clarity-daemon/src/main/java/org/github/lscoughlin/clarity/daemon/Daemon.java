@@ -6,14 +6,29 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Owns one {@link IndexService} and its {@link CorpusWatcher}. All state
- * changes happen under this object's monitor, so socket-triggered and
- * watch-triggered passes serialize and searches never observe a
- * half-reloaded service.
+ * Owns one {@link IndexService} and its {@link CorpusWatcher}.
+ *
+ * <p>Two independent concerns are locked separately. {@code structureLock},
+ * a read-write lock, guards the {@code service}/{@code watcher} field
+ * references themselves: {@link #reload} takes the write side to swap and
+ * close them, while {@link #search}, {@link #drainReindex}, and {@link
+ * #reindexNow} take the read side, so searches never observe a
+ * half-reloaded service but otherwise run fully concurrently with each
+ * other and with reindex passes — Lucene's near-real-time reader already
+ * makes concurrent search and write against the same backend safe, so nothing
+ * here needs to serialize them. {@code reindexMutex} separately serializes
+ * reindex passes against each other (search never touches it), so two
+ * passes never race each other's checksum comparisons or write duplicate
+ * documents. Everything else — the queued/scan flags, {@code inFlight}, and
+ * the idle-timeout clock — is cheap bookkeeping still guarded by this
+ * object's own monitor, held only for the instant it takes to read or flip
+ * a field, never across a Lucene call.
  */
 public final class Daemon implements Closeable {
     private static final Logger LOG = LoggerFactory.getLogger(Daemon.class);
@@ -27,6 +42,8 @@ public final class Daemon implements Closeable {
     private final Duration idleTimeout;
     private final Duration scanInterval;
     private final Embedder embedder;
+    private final ReentrantReadWriteLock structureLock = new ReentrantReadWriteLock();
+    private final ReentrantLock reindexMutex = new ReentrantLock();
     private IndexService service;
     private CorpusWatcher watcher;
     private long lastActivityNanos = System.nanoTime();
@@ -78,19 +95,19 @@ public final class Daemon implements Closeable {
         return daemon;
     }
 
-    public synchronized List<Hit> search(
+    public List<Hit> search(
             String indexName, String query, int topN, SearchBackend.Syntax syntax)
             throws IOException {
         return search(indexName, query, topN, syntax, null);
     }
 
-    public synchronized List<Hit> search(
+    public List<Hit> search(
             String indexName, String query, int topN, SearchBackend.Syntax syntax, String pathPrefix)
             throws IOException {
         return search(indexName, query, topN, syntax, pathPrefix, false);
     }
 
-    public synchronized List<Hit> search(
+    public List<Hit> search(
             String indexName,
             String query,
             int topN,
@@ -98,7 +115,8 @@ public final class Daemon implements Closeable {
             String pathPrefix,
             boolean fullText)
             throws IOException {
-        inFlight++;
+        markInFlight(1);
+        structureLock.readLock().lock();
         try {
             var hits = service.search(indexName, query, topN, syntax, pathPrefix, fullText);
             // Fire-and-forget: queues a pass for the background loop to pick up
@@ -107,17 +125,28 @@ public final class Daemon implements Closeable {
             touch();
             return hits;
         } finally {
-            inFlight--;
+            structureLock.readLock().unlock();
+            markInFlight(-1);
         }
     }
 
-    public synchronized Map<String, Integer> counts() throws IOException {
-        return service.counts();
+    public Map<String, Integer> counts() throws IOException {
+        structureLock.readLock().lock();
+        try {
+            return service.counts();
+        } finally {
+            structureLock.readLock().unlock();
+        }
     }
 
     /** Document updates performed per named index; operational visibility and tests. */
-    public synchronized Map<String, Long> writeCounts() throws IOException {
-        return service.writeCounts();
+    public Map<String, Long> writeCounts() throws IOException {
+        structureLock.readLock().lock();
+        try {
+            return service.writeCounts();
+        } finally {
+            structureLock.readLock().unlock();
+        }
     }
 
     /** Queues a pass; the next drain runs it (coalescing bursts). */
@@ -132,16 +161,29 @@ public final class Daemon implements Closeable {
      * {@code reindexQueued}, so it always counts as activity here regardless
      * of this check).
      */
-    public synchronized void drainReindex() throws IOException {
-        var activity = reindexQueued;
-        reindexQueued = false;
-        var scan = scanQueued;
-        scanQueued = false;
-        if (activity || scan) {
-            var stats = service.reindex();
-            if (activity || hasChanges(stats)) {
-                touch();
-            }
+    public void drainReindex() throws IOException {
+        boolean activity;
+        boolean scan;
+        synchronized (this) {
+            activity = reindexQueued;
+            reindexQueued = false;
+            scan = scanQueued;
+            scanQueued = false;
+        }
+        if (!activity && !scan) {
+            return;
+        }
+        Map<String, ReindexStats> stats;
+        structureLock.readLock().lock();
+        reindexMutex.lock();
+        try {
+            stats = service.reindex();
+        } finally {
+            reindexMutex.unlock();
+            structureLock.readLock().unlock();
+        }
+        if (activity || hasChanges(stats)) {
+            touch();
         }
     }
 
@@ -151,9 +193,10 @@ public final class Daemon implements Closeable {
     }
 
     /** Reindexes one named index, or every index when {@code indexOrNull} is null. */
-    public synchronized Map<String, ReindexStats> reindexNow(String indexOrNull)
-            throws IOException {
-        inFlight++;
+    public Map<String, ReindexStats> reindexNow(String indexOrNull) throws IOException {
+        markInFlight(1);
+        structureLock.readLock().lock();
+        reindexMutex.lock();
         try {
             var stats =
                     indexOrNull == null
@@ -162,26 +205,37 @@ public final class Daemon implements Closeable {
             touch();
             return stats;
         } finally {
-            inFlight--;
+            reindexMutex.unlock();
+            structureLock.readLock().unlock();
+            markInFlight(-1);
         }
     }
 
     /** Reloads config, service, and watcher registration. Queues a pass. */
-    public synchronized void reload() throws IOException {
-        service.close();
-        watcher.close();
-        service = IndexService.open(baseDir, ConfigLoader.load(baseDir), embedder);
-        watcher = CorpusWatcher.register(baseDir, service.config());
-        reindexQueued = true;
+    public void reload() throws IOException {
+        structureLock.writeLock().lock();
+        try {
+            service.close();
+            watcher.close();
+            service = IndexService.open(baseDir, ConfigLoader.load(baseDir), embedder);
+            watcher = CorpusWatcher.register(baseDir, service.config());
+        } finally {
+            structureLock.writeLock().unlock();
+        }
+        requestReindex();
         touch();
         LOG.atInfo().setMessage("reloaded configuration").log();
     }
 
     /**
      * Applies one drained batch: config reload, debounce accounting, then
-     * any due pass. {@code nowNanos} is a parameter for tests.
+     * any due pass. {@code nowNanos} is a parameter for tests. Only ever
+     * called from {@link #runLoop}'s single thread, so the timer fields it
+     * owns outright ({@code lastEventNanos}, {@code nextScanNanos}) need no
+     * guard; the flags shared with other threads go through {@link
+     * #requestReindex} or a short {@code synchronized} block.
      */
-    synchronized void tick(CorpusWatcher.Drain drain, long nowNanos) throws IOException {
+    void tick(CorpusWatcher.Drain drain, long nowNanos) throws IOException {
         if (drain.configChanged()) {
             reload();
         }
@@ -190,11 +244,13 @@ public final class Daemon implements Closeable {
         }
         if (lastEventNanos > 0 && nowNanos - lastEventNanos >= QUIET_PERIOD.toNanos()) {
             lastEventNanos = 0;
-            reindexQueued = true;
+            requestReindex();
         }
         if (nowNanos >= nextScanNanos) {
             nextScanNanos = nowNanos + scanInterval.toNanos();
-            scanQueued = true;
+            synchronized (this) {
+                scanQueued = true;
+            }
         }
         drainReindex();
     }
@@ -208,42 +264,47 @@ public final class Daemon implements Closeable {
         while (!shutdown) {
             CorpusWatcher.Drain drain = watcher.drainMillis(POLL_MILLIS);
             var now = System.nanoTime();
-            synchronized (this) {
-                if (shutdown) {
-                    return;
-                }
-                try {
-                    tick(drain, now);
-                } catch (IOException e) {
-                    LOG.atWarn()
-                            .setMessage("reindex pass failed, will retry on next trigger")
-                            .setCause(e)
-                            .log();
-                }
-                if (idleExpired(now)) {
-                    LOG.atInfo().setMessage("idle timeout reached, shutting down").log();
-                    shutdown();
-                    return;
-                }
+            if (shutdown) {
+                return;
+            }
+            try {
+                tick(drain, now);
+            } catch (IOException e) {
+                LOG.atWarn()
+                        .setMessage("reindex pass failed, will retry on next trigger")
+                        .setCause(e)
+                        .log();
+            }
+            if (idleExpired(now)) {
+                LOG.atInfo().setMessage("idle timeout reached, shutting down").log();
+                shutdown();
+                return;
             }
         }
     }
 
     /** Idempotent clean shutdown from any thread. */
-    public synchronized void shutdown() {
-        if (shutdown) {
-            return;
+    public void shutdown() {
+        synchronized (this) {
+            if (shutdown) {
+                return;
+            }
+            shutdown = true;
         }
-        shutdown = true;
+        structureLock.writeLock().lock();
         try {
-            watcher.close();
-        } catch (IOException e) {
-            LOG.atDebug().setMessage("watcher close failed").setCause(e).log();
-        }
-        try {
-            service.close();
-        } catch (IOException e) {
-            LOG.atDebug().setMessage("service close failed").setCause(e).log();
+            try {
+                watcher.close();
+            } catch (IOException e) {
+                LOG.atDebug().setMessage("watcher close failed").setCause(e).log();
+            }
+            try {
+                service.close();
+            } catch (IOException e) {
+                LOG.atDebug().setMessage("service close failed").setCause(e).log();
+            }
+        } finally {
+            structureLock.writeLock().unlock();
         }
     }
 
@@ -252,7 +313,11 @@ public final class Daemon implements Closeable {
         shutdown();
     }
 
-    private void touch() {
+    private synchronized void touch() {
         lastActivityNanos = System.nanoTime();
+    }
+
+    private synchronized void markInFlight(int delta) {
+        inFlight += delta;
     }
 }

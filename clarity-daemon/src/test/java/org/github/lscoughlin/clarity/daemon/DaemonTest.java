@@ -13,9 +13,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.github.lscoughlin.clarity.daemon.CorpusWatcher.Drain;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -108,6 +111,87 @@ class DaemonTest {
             assertEquals(Map.of("docs", 2L), daemon.writeCounts());
             assertEquals(
                     1, daemon.search("docs", "Edited", 10, SearchBackend.Syntax.TEXT).size());
+        }
+    }
+
+    /**
+     * Regression test for the production stall: search and reindex used to
+     * share one monitor, so a slow embedding pass (real observed cause: an
+     * ONNX call stuck for minutes under host CPU pressure) blocked every
+     * concurrent search for its full duration. A blocking test embedder
+     * stands in for "reindex is stuck deep inside a slow call" — search must
+     * return promptly regardless.
+     */
+    @Test
+    void searchDoesNotBlockOnInFlightReindex(@TempDir Path base) throws Exception {
+        writeCorpus(base);
+        // A file untouched by the edit below: the edited file's old chunks
+        // are deleted before the blocking embed call even runs (and its new
+        // chunks aren't added until after), so it's unsearchable in either
+        // state while blocked — this one stays live the whole time and is
+        // what proves search is actually serving results, not just fast.
+        Files.writeString(base.resolve("doc/stable.md"), "# Stable\nAlways findable content.\n");
+        var releaseEmbed = new CountDownLatch(1);
+        var blockNextEmbed = new AtomicBoolean(false);
+        Embedder blockingEmbedder =
+                new Embedder() {
+                    @Override
+                    public String modelId() {
+                        return "test-blocking";
+                    }
+
+                    @Override
+                    public int dimensions() {
+                        return 2;
+                    }
+
+                    @Override
+                    public float[] embed(String text) {
+                        if (blockNextEmbed.get()) {
+                            try {
+                                assertTrue(
+                                        releaseEmbed.await(10, TimeUnit.SECONDS),
+                                        "test bug: nothing released the embed latch");
+                            } catch (InterruptedException e) {
+                                Thread.currentThread().interrupt();
+                            }
+                        }
+                        return new float[] {1f, 0f};
+                    }
+                };
+
+        try (Daemon daemon =
+                Daemon.start(base, Duration.ofMinutes(10), Duration.ofMinutes(5), blockingEmbedder)) {
+            Files.writeString(base.resolve("doc/guide.md"), "# Guide\nEdited body here.\n");
+            blockNextEmbed.set(true);
+
+            ExecutorService pool = Executors.newSingleThreadExecutor();
+            try {
+                Future<?> reindexing =
+                        pool.submit(
+                                () -> {
+                                    daemon.reindexNow(null);
+                                    return null;
+                                });
+                // Give the background pass a beat to actually enter the
+                // blocking embed call before racing the search against it.
+                Thread.sleep(200);
+
+                long startNanos = System.nanoTime();
+                List<Hit> hits =
+                        daemon.search("docs", "findable", 10, SearchBackend.Syntax.TEXT);
+                long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000;
+
+                assertEquals(1, hits.size());
+                assertTrue(
+                        elapsedMs < 2000,
+                        "search must not wait on the in-flight reindex; took " + elapsedMs + "ms");
+
+                releaseEmbed.countDown();
+                reindexing.get(10, TimeUnit.SECONDS);
+            } finally {
+                pool.shutdownNow();
+            }
         }
     }
 

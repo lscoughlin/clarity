@@ -22,6 +22,7 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexNotFoundException;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.IndexWriterConfig;
+import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.index.VectorSimilarityFunction;
 import org.apache.lucene.queryparser.classic.MultiFieldQueryParser;
@@ -240,14 +241,30 @@ final class LuceneBackend implements SearchBackend {
         }
     }
 
+    /**
+     * {@code IndexReader.document(int)} returns stored fields by raw doc ID
+     * regardless of deletion status: a term-deleted document keeps its stale
+     * stored fields readable until a future merge physically drops it. Every
+     * per-leaf scan here must skip non-live doc IDs, or a file edited once
+     * would read back its pre-edit checksum/path forever and never converge
+     * on the freshly written value.
+     */
     @Override
     public Map<String, String> knownChecksums() throws IOException {
         var known = new HashMap<String, String>();
         try (DirectoryReader reader = DirectoryReader.open(writer)) {
-            for (int i = 0; i < reader.maxDoc(); i++) {
-                var doc = reader.storedFields().document(i);
-                if (doc != null) {
-                    known.putIfAbsent(doc.get("path"), doc.get("checksum"));
+            for (LeafReaderContext ctx : reader.leaves()) {
+                var leaf = ctx.reader();
+                var liveDocs = leaf.getLiveDocs();
+                var storedFields = leaf.storedFields();
+                for (int i = 0; i < leaf.maxDoc(); i++) {
+                    if (liveDocs != null && !liveDocs.get(i)) {
+                        continue;
+                    }
+                    var doc = storedFields.document(i);
+                    if (doc != null) {
+                        known.putIfAbsent(doc.get("path"), doc.get("checksum"));
+                    }
                 }
             }
         }
@@ -263,10 +280,18 @@ final class LuceneBackend implements SearchBackend {
     public Set<String> listPaths() throws IOException {
         var paths = new HashSet<String>();
         try (DirectoryReader reader = DirectoryReader.open(writer)) {
-            for (int i = 0; i < reader.maxDoc(); i++) {
-                var doc = reader.storedFields().document(i);
-                if (doc != null) {
-                    paths.add(doc.get("path"));
+            for (LeafReaderContext ctx : reader.leaves()) {
+                var leaf = ctx.reader();
+                var liveDocs = leaf.getLiveDocs();
+                var storedFields = leaf.storedFields();
+                for (int i = 0; i < leaf.maxDoc(); i++) {
+                    if (liveDocs != null && !liveDocs.get(i)) {
+                        continue;
+                    }
+                    var doc = storedFields.document(i);
+                    if (doc != null) {
+                        paths.add(doc.get("path"));
+                    }
                 }
             }
         }
