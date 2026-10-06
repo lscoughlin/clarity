@@ -340,7 +340,7 @@ public final class ClarityMcpServer implements Callable<Integer> {
         HealthFunction health = () -> DaemonClient.health(target);
         var transport = new StdioServerTransportProvider(new JacksonMcpJsonMapper(JSON));
         McpServer.sync(transport)
-                .serverInfo("clarity", "1.0-SNAPSHOT")
+                .serverInfo("clarity", "1.0.0")
                 .tools(
                         buildSearchTool(search),
                         buildListIndexesTool(listIndexes),

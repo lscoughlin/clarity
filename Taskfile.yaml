@@ -21,12 +21,12 @@ tasks:
     deps: [build:bundle]
     cmds:
       - mkdir -p dist
-      - zip -j dist/clarity.zip clarity-cli/src/bash/clarity.sh clarity-cli/target/clarity-cli-1.0-SNAPSHOT.jar
+      - zip -j dist/clarity.zip clarity-cli/src/bash/clarity.sh clarity-cli/target/clarity-cli-1.0.0.jar
 
   deploy:
     desc: Package (skip tests) and install the daemon/cli jars into ~/.local/clarity/.
     cmds:
       - mvn package -DskipTests
       - mkdir -p ~/.local/clarity
-      - cp clarity-daemon/target/clarity-daemon-1.0-SNAPSHOT.jar ~/.local/clarity/
-      - cp clarity-cli/target/clarity-cli-1.0-SNAPSHOT.jar ~/.local/clarity/
+      - cp clarity-daemon/target/clarity-daemon-1.0.0.jar ~/.local/clarity/
+      - cp clarity-cli/target/clarity-cli-1.0.0.jar ~/.local/clarity/
