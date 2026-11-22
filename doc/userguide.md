@@ -80,7 +80,8 @@ daemon probes for) for Lucene's faster vector path.
 
 Both entry points accept `--help`. The daemon reindexes
 changed files automatically, rescans periodically, and exits
-after ~10 idle minutes; the next query restarts it.
+after ~10 idle minutes; the next query restarts it. Change this
+with `--idle-timeout` (for example `30m`, or `0` to never stop).
 
 ## Vector search
 

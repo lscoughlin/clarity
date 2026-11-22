@@ -92,6 +92,9 @@ public final class Daemon implements Closeable {
         CorpusWatcher watcher = CorpusWatcher.register(baseDir, service.config());
         Daemon daemon = new Daemon(baseDir, idleTimeout, scanInterval, embedder, service, watcher);
         daemon.touch();
+        if (idleTimeout.isZero()) {
+            LOG.atInfo().setMessage("idle timeout disabled").log();
+        }
         return daemon;
     }
 
@@ -256,10 +259,16 @@ public final class Daemon implements Closeable {
     }
 
     synchronized boolean idleExpired(long nowNanos) {
+        if (idleTimeout.isZero()) {
+            return false;
+        }
         return inFlight == 0 && nowNanos - lastActivityNanos >= idleTimeout.toNanos();
     }
 
-    /** Blocks serving watch passes until shutdown (idle timeout or hook). */
+    /**
+     * Blocks serving watch passes until shutdown (idle timeout or hook).
+     * A zero idle timeout never expires.
+     */
     public void runLoop() {
         while (!shutdown) {
             CorpusWatcher.Drain drain = watcher.drainMillis(POLL_MILLIS);
@@ -276,7 +285,10 @@ public final class Daemon implements Closeable {
                         .log();
             }
             if (idleExpired(now)) {
-                LOG.atInfo().setMessage("idle timeout reached, shutting down").log();
+                LOG.atInfo()
+                        .setMessage("idle timeout reached ({}), shutting down")
+                        .addArgument(IdleTimeout.format(idleTimeout))
+                        .log();
                 shutdown();
                 return;
             }

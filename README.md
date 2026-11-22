@@ -93,7 +93,7 @@ A multi-module Maven project:
   reindexing. Watches the corpus (debounced, plus a periodic scan),
   skips unchanged files by SHA-256, and serves `search` /
   `reindex` / `health` over a Unix socket. Exits after ~10 idle
-  minutes; clients auto-start it.
+  minutes by default (`--idle-timeout`); clients auto-start it.
 - **clarity-cli** — one jar, one entry point (`ClarityMain`,
   built with `picocli`): `index` / `query` for local use and
   scripting, `mcp` serving a `search` tool over stdio (MCP Java
@@ -184,6 +184,40 @@ can't crowd out a weaker one inside it.
 Runtime files live next to the config: `.clarity/clarity.sock`,
 `.clarity/daemon.lock`, `.clarity/daemon.log`. Commit
 `config.yaml`; ignore the rest.
+
+## Running the daemon
+
+`clarity daemon` runs the daemon in the foreground. The `index`,
+`query` and `mcp` commands start one for you when none runs.
+
+| Option | Meaning | Default |
+| --- | --- | --- |
+| `--dir=<dir>` | Project directory to serve. | `.` |
+| `--socket=<path>` | Socket path. | `<dir>/.clarity/clarity.sock` |
+| `--idle-timeout=<duration>` | Stop after this much time without queries. Give seconds as a plain number, or add the suffix `s`, `m` or `h` (for example `30m`). The value `0` means never stop when idle. | `10m` |
+
+The environment variable `CLARITY_DAEMON_IDLE_TIMEOUT` takes the
+same format. The option wins over the variable. A bad value stops
+the daemon with a message and exit status 2.
+
+A query resets the idle clock. A reindex pass that finds changes
+also resets it. The periodic rescan that finds nothing does not.
+A daemon that a client starts on demand uses the default.
+
+### Run as a sidecar
+
+A supervisor, such as a Kubernetes pod, restarts a process that
+exits. An idle stop then causes a restart loop. Set the timeout to
+`0` so the daemon runs until the supervisor stops it:
+
+```bash
+clarity daemon --dir /corpus --socket /run/clarity/clarity.sock --idle-timeout=0
+```
+
+The daemon logs `idle timeout disabled` once at start. On SIGTERM
+it finishes the running queries, removes the socket file and exits
+with status 0. Clients such as `clarity mcp` find this daemon
+through the socket as usual.
 
 ## Tech stack
 

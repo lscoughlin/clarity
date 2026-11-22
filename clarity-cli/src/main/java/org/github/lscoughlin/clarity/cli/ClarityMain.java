@@ -18,7 +18,7 @@ import picocli.CommandLine.Model.CommandSpec;
 @Command(
         name = "clarity",
         mixinStandardHelpOptions = true,
-        version = "clarity 1.0.0",
+        version = "clarity 1.1.0",
         description = "Index and search a local documentation corpus.",
         subcommands = {
             IndexCommand.class,
